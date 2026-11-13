@@ -1,5 +1,8 @@
 # PostHub
 
+> [!WARNING]
+> This is a personal project built for fun. I don't plan to actively maintain it, but updates will definitely come as I keep working on it in my spare time.
+
 A local social media manager (YouTube, LinkedIn, Facebook, Instagram, WordPress).
 
 ## Stack
