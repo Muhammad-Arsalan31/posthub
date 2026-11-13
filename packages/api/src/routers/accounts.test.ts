@@ -140,7 +140,7 @@ describe('accounts router', () => {
     const owner = seedUser(db);
     const fake = createFakeFetch([
       ['GET https://wp.example/wp-json/wp/v2/users/me', () => new Response('{}', { status: 401 })],
-      ['GET https://wp.example/wp-json/', () => ({ name: 'WP' })],
+      ['GET https://wp.example/wp-json/', () => ({ name: 'WP', namespaces: ['wp/v2'] })],
     ]);
     const ctx = testContext(db, sessionFor(owner), { deps: fake });
     const input = { siteUrl: 'https://wp.example', username: 'u', appPassword: 'p' };

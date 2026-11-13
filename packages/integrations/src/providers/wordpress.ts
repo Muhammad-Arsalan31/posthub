@@ -29,7 +29,8 @@ const basicAuth = (c: Pick<WordPressCredentials, 'username' | 'appPassword'>) =>
   authorization: `Basic ${Buffer.from(`${c.username}:${c.appPassword}`).toString('base64')}`,
 });
 
-function normalizeSiteUrl(raw: string) {
+/** Accepts any WordPress URL people paste (login page, admin, API) and returns the site root. */
+export function normalizeSiteUrl(raw: string) {
   let url: URL;
   try {
     url = new URL(raw.trim());
@@ -42,7 +43,35 @@ function normalizeSiteUrl(raw: string) {
       'Use an https:// site URL. Application Passwords should never be sent over plain HTTP.',
     );
   }
-  return `${url.origin}${url.pathname}`.replace(/\/+$/, '');
+  const path = url.pathname.replace(
+    /\/(wp-login\.php|wp-admin|wp-json|xmlrpc\.php|index\.php)(\/.*)?$/i,
+    '',
+  );
+  return `${url.origin}${path}`.replace(/\/+$/, '');
+}
+
+/** WordPress REST error code -> what the person should actually do. */
+const AUTH_ERRORS: Record<string, string> = {
+  // Ambiguous: sites that hide login errors (security plugins) answer this for wrong credentials too.
+  rest_not_logged_in:
+    'WordPress did not accept the login. Check the username, and use an Application Password ' +
+    '(Users → Profile → Application Passwords), not your normal login password. If both are ' +
+    'definitely right, the web host may be stripping the Authorization header: add this line at ' +
+    'the top of the site’s .htaccess file, then try again: ' +
+    'SetEnvIf Authorization "(.*)" HTTP_AUTHORIZATION=$1',
+  incorrect_password:
+    'That Application Password is not valid. Create one under Users → Profile → Application ' +
+    'Passwords; your normal login password will not work here.',
+  invalid_username: 'WordPress has no user with that username.',
+  invalid_email: 'WordPress has no user with that email address.',
+  application_passwords_disabled:
+    'Application Passwords are turned off on this site, often by a security plugin.',
+};
+
+function authErrorMessage(error: PlatformError) {
+  const code = (error.body as { code?: unknown } | undefined)?.code;
+  if (typeof code === 'string' && AUTH_ERRORS[code]) return AUTH_ERRORS[code];
+  return `WordPress rejected the username or Application Password${typeof code === 'string' ? ` (${code})` : ''}.`;
 }
 
 /** Plain text to simple HTML paragraphs. */
@@ -59,22 +88,27 @@ export function toHtml(text: string, link?: string) {
 }
 
 export function createWordPress(deps: HttpDeps) {
-  async function discoverApiBase(siteUrl: string) {
+  /** Fetches a REST API index; null unless it is real JSON (not an HTML page). */
+  async function apiIndex(url: string) {
     try {
-      const res = await deps.fetch(`${siteUrl}/wp-json/`);
-      if (res.ok) {
-        const info = (await res.json()) as { name?: string };
-        return { apiBase: `${siteUrl}/wp-json`, siteName: info.name };
-      }
+      const res = await deps.fetch(url);
+      if (!res.ok) return null;
+      const info = (await res.json()) as { name?: string; namespaces?: unknown };
+      return Array.isArray(info.namespaces) ? info : null;
     } catch {
-      // Fall through to the plain-permalink form.
+      return null;
     }
-    const { data } = await request<{ name?: string }>(
-      deps,
+  }
+
+  async function discoverApiBase(siteUrl: string) {
+    const pretty = await apiIndex(`${siteUrl}/wp-json/`);
+    if (pretty) return { apiBase: `${siteUrl}/wp-json`, siteName: pretty.name };
+    const plain = await apiIndex(`${siteUrl}/?rest_route=/`);
+    if (plain) return { apiBase: `${siteUrl}/?rest_route=`, siteName: plain.name };
+    throw new PlatformError(
       'wordpress',
-      `${siteUrl}/?rest_route=/`,
+      `Could not find the WordPress REST API at ${siteUrl}. Check the site URL, and that no plugin disables the REST API.`,
     );
-    return { apiBase: `${siteUrl}/?rest_route=`, siteName: data.name };
   }
 
   async function connect(
@@ -100,11 +134,10 @@ export function createWordPress(deps: HttpDeps) {
       ));
     } catch (error) {
       if (error instanceof PlatformError && (error.status === 401 || error.status === 403)) {
-        throw new PlatformError(
-          'wordpress',
-          'WordPress rejected the username or Application Password.',
-          { status: error.status },
-        );
+        throw new PlatformError('wordpress', authErrorMessage(error), {
+          status: error.status,
+          body: error.body,
+        });
       }
       throw error;
     }
