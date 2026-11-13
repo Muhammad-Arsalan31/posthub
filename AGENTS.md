@@ -40,6 +40,7 @@ packages/integrations/  platform connectors: no DB access, injectable fetch
   src/registry.ts    createIntegrations(config): enabled providers + adapters, PROVIDERS metadata
   src/vault.ts       AES-256-GCM credential encryption
   src/testing.ts     createFakeFetch(), tempMedia() (@posthub/integrations/testing)
+packages/release/       semver helpers and the `pnpm release` CLI (src/cli.ts)
 ```
 
 Internal packages ship **TypeScript source** (`exports` point at `.ts`) with no build step. The web
@@ -58,6 +59,7 @@ app bundles them via Vite, and the server bundles them with `vp pack` (`deps.alw
 | Run production build              | `pnpm start` (serves the PWA on :4100) |
 | New migration after schema change | `pnpm db:generate`                     |
 | Run a TS script                   | `pnpm exec vpx path/to/script.ts`      |
+| Cut a release (see Releases)      | `pnpm release minor` (or patch/major)  |
 
 The global `vp` CLI may not be installed, so use `pnpm exec vp ...`. Use `vpx` to run TS files; do
 not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run <name>` runs a script.
@@ -168,6 +170,21 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   categories per WordPress account id.
 - When changing what an adapter accepts, update `packages/api/src/post-rules.ts` and `apps/web/src/lib/platforms.ts` together.
 - Planned next: public media URLs (for Instagram), LinkedIn video, then a Windows startup/Electron shell.
+
+## Releases
+
+- One version for the whole app, in the root `package.json` (every workspace package is kept in step). It follows
+  semver: **major** for breaking changes (e.g. a migration that needs manual steps, removed features, changed
+  config), **minor** for new features, **patch** for fixes.
+- Release notes live on **GitHub Releases** (there is no CHANGELOG file). They are built from commit subjects and
+  merged PRs, so write commit subjects the owner can read ("Add LinkedIn video posts", not "wip"). PR labels
+  `breaking`, `enhancement`/`feature` and `bug`/`fix` group the generated notes (`.github/release.yml`).
+- `pnpm release <patch|minor|major|x.y.z>` (on a clean `main`; add `--dry-run` to preview) bumps every
+  `package.json`, commits `Release vX.Y.Z` and creates the tag. `git push --follow-tags` then triggers
+  `.github/workflows/release.yml`, which publishes the GitHub release. Polish the notes there if needed.
+- The app shows the version in the sidebar, linking to its GitHub release (`RELEASE_NOTES_URL` in
+  `apps/web/src/lib/version.ts`, from `repository.url` in the root `package.json`), and notifies the owner once
+  after an update. The server reports the version on `/health`.
 
 ## Environment
 

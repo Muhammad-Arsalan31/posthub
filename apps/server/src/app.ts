@@ -17,6 +17,7 @@ import type { Db } from '@posthub/db';
 import { PlatformError, type Vault } from '@posthub/integrations';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
+import { version } from '../../../package.json';
 import { env } from './env';
 
 export interface AppDeps {
@@ -55,7 +56,7 @@ export function createApp({
     `${publicUrl}/accounts?${new URLSearchParams(params).toString()}`;
   const redirectUri = (provider: string) => `${publicUrl}/connect/${provider}/callback`;
 
-  app.get('/health', (c) => c.json({ ok: true }));
+  app.get('/health', (c) => c.json({ ok: true, version }));
 
   // better-auth owns everything under /api/auth.
   app.on(['GET', 'POST'], '/api/auth/*', (c) => auth.handler(c.req.raw));

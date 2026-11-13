@@ -5,6 +5,7 @@ import { createAuth } from '@posthub/auth';
 import { createDb, runMigrations } from '@posthub/db';
 import { createVault } from '@posthub/integrations';
 import { createApp } from './app';
+import { version } from '../../../package.json';
 import { env } from './env';
 
 mkdirSync(env.mediaDir, { recursive: true });
@@ -32,7 +33,7 @@ const server = serve({ fetch: app.fetch, port: env.port, hostname: '127.0.0.1' }
     .status()
     .filter((p) => p.configured)
     .map((p) => p.label);
-  console.log(`PostHub server on http://127.0.0.1:${info.port} (data: ${env.dataDir})`);
+  console.log(`PostHub v${version} on http://127.0.0.1:${info.port} (data: ${env.dataDir})`);
   console.log(`Connectors: ${enabled.join(', ')}`);
 });
 

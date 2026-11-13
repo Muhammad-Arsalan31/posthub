@@ -1,7 +1,9 @@
-import { AppShell, Button, Group, NavLink, Text, Title } from '@mantine/core';
+import { Anchor, AppShell, Button, Group, NavLink, Text, Title } from '@mantine/core';
 import { createFileRoute, Link, Outlet, redirect, useNavigate } from '@tanstack/react-router';
 import { ThemeToggle } from '../components/theme-toggle';
+import { UpdateNotice } from '../components/update-notice';
 import { authClient } from '../lib/auth-client';
+import { APP_VERSION, RELEASE_NOTES_URL } from '../lib/version';
 
 /** Layout + auth guard for every signed-in page. */
 export const Route = createFileRoute('/_app')({
@@ -39,11 +41,19 @@ function AppLayout() {
         </Group>
       </AppShell.Header>
       <AppShell.Navbar p="xs">
-        <NavLink component={Link} to="/" label="Posts" activeOptions={{ exact: false }} />
-        <NavLink component={Link} to="/media" label="Media" />
-        <NavLink component={Link} to="/accounts" label="Accounts" />
+        <AppShell.Section grow>
+          <NavLink component={Link} to="/" label="Posts" activeOptions={{ exact: false }} />
+          <NavLink component={Link} to="/media" label="Media" />
+          <NavLink component={Link} to="/accounts" label="Accounts" />
+        </AppShell.Section>
+        <AppShell.Section px="sm" py="xs">
+          <Anchor href={RELEASE_NOTES_URL} target="_blank" rel="noreferrer" size="xs" c="dimmed">
+            v{APP_VERSION} · Release notes
+          </Anchor>
+        </AppShell.Section>
       </AppShell.Navbar>
       <AppShell.Main>
+        <UpdateNotice />
         <Outlet />
       </AppShell.Main>
     </AppShell>

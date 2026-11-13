@@ -74,7 +74,10 @@ async function signUp(app: ReturnType<typeof setup>['app']) {
 describe('server', () => {
   it('reports health', async () => {
     const { app, rpc } = setup();
-    expect(await (await app.request('/health')).json()).toEqual({ ok: true });
+    expect(await (await app.request('/health')).json()).toMatchObject({
+      ok: true,
+      version: expect.any(String),
+    });
     expect(await rpc().health()).toMatchObject({ ok: true });
   });
 

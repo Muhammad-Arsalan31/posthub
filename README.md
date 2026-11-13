@@ -21,6 +21,7 @@ packages/
   db/        Drizzle schema, migrations (drizzle/), createDb, test helpers (@posthub/db/testing)
   auth/      better-auth config (createAuth)
   api/       oRPC router + procedures; the web app imports only its types
+  release/   semver helpers behind `pnpm release`
 ```
 
 Workspace packages ship TypeScript source (no build step). The server bundles them with `vp pack`.
@@ -48,6 +49,7 @@ Data is stored in `.data/` (override with `POSTHUB_DATA_DIR`).
 | `pnpm check:fix`   | Same, applying fixes                                               |
 | `pnpm db:generate` | Generate a SQL migration after editing `packages/db/src/schema`    |
 | `pnpm db:studio`   | Open Drizzle Studio                                                |
+| `pnpm release`     | Bump the version and tag it; GitHub Actions publishes the release  |
 
 ## Tests
 

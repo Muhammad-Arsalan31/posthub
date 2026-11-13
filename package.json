@@ -2,6 +2,10 @@
   "name": "posthub",
   "version": "0.0.0",
   "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Muhammad-Arsalan31/posthub"
+  },
   "type": "module",
   "scripts": {
     "dev": "turbo run dev",
@@ -12,7 +16,8 @@
     "check:fix": "vp check --fix",
     "db:generate": "pnpm --filter @posthub/db db:generate",
     "db:migrate": "pnpm --filter @posthub/db db:migrate",
-    "db:studio": "pnpm --filter @posthub/db db:studio"
+    "db:studio": "pnpm --filter @posthub/db db:studio",
+    "release": "vpx packages/release/src/cli.ts"
   },
   "devDependencies": {
     "@types/node": "catalog:",
