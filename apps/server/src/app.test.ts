@@ -6,6 +6,9 @@ import { createAuth } from '@posthub/auth';
 import { createTestDb } from '@posthub/db/testing';
 import { createVault } from '@posthub/integrations';
 import { createFakeFetch } from '@posthub/integrations/testing';
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vite-plus/test';
 import { createApp } from './app';
 
@@ -32,7 +35,16 @@ function setup() {
     envConfig: { google: { clientId: 'gid', clientSecret: 'gsecret' } },
     deps: { fetch: google.fetch },
   });
-  const app = createApp({ db, auth, providerApps, vault, publicUrl: baseURL, log: false });
+  const mediaDir = mkdtempSync(join(tmpdir(), 'posthub-server-media-'));
+  const app = createApp({
+    db,
+    auth,
+    providerApps,
+    vault,
+    mediaDir,
+    publicUrl: baseURL,
+    log: false,
+  });
 
   const rpc = (cookie?: string): RouterClient<AppRouter> =>
     createORPCClient(
@@ -82,6 +94,31 @@ describe('server', () => {
     const posts = await client.posts.list();
     expect(posts.map((p) => p.id)).toEqual([id]);
     expect(posts[0]?.createdAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('media files', () => {
+  it('uploads through oRPC and serves files to their owner, with ranges', async () => {
+    const { app, rpc } = setup();
+    const cookie = await signUp(app);
+    const file = new File(['0123456789'], 'clip.mp4', { type: 'video/mp4' });
+    const uploaded = await rpc(cookie).media.upload({ file });
+
+    const url = `/files/${uploaded.id}`;
+    const full = await app.request(url, { headers: { cookie } });
+    expect(full.status).toBe(200);
+    expect(full.headers.get('content-type')).toBe('video/mp4');
+    expect(await full.text()).toBe('0123456789');
+
+    const part = await app.request(url, {
+      headers: { cookie, range: 'bytes=2-5' },
+    });
+    expect(part.status).toBe(206);
+    expect(part.headers.get('content-range')).toBe('bytes 2-5/10');
+    expect(await part.text()).toBe('2345');
+
+    expect((await app.request(url)).status).toBe(401);
+    expect((await app.request('/files/nope', { headers: { cookie } })).status).toBe(404);
   });
 });
 

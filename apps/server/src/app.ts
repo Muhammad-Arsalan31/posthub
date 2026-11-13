@@ -1,5 +1,7 @@
-import { existsSync } from 'node:fs';
-import { relative } from 'node:path';
+import { createReadStream, existsSync } from 'node:fs';
+import { stat } from 'node:fs/promises';
+import { join, relative } from 'node:path';
+import { Readable } from 'node:stream';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { onError, ORPCError } from '@orpc/server';
 import { RPCHandler } from '@orpc/server/fetch';
@@ -23,6 +25,8 @@ export interface AppDeps {
   /** Live connector config; app credentials saved in the UI apply without a restart. */
   providerApps: IntegrationsManager;
   vault: Vault;
+  /** Folder holding uploaded media. */
+  mediaDir?: string;
   /** Origin the browser uses; OAuth redirect URIs are built from it. */
   publicUrl?: string;
   log?: boolean;
@@ -39,6 +43,7 @@ export function createApp({
   auth,
   providerApps,
   vault,
+  mediaDir = env.mediaDir,
   publicUrl = env.publicUrl,
   log = true,
 }: AppDeps) {
@@ -106,6 +111,39 @@ export function createApp({
     }
   });
 
+  // Uploaded media, for previews in the composer. Owner only; supports Range so videos can seek.
+  app.get('/files/:id', async (c) => {
+    const session = await getSession(c.req.raw.headers);
+    if (!session) return c.body(null, 401);
+    const asset = await db.query.mediaAsset.findFirst({
+      where: (m, { and, eq }) => and(eq(m.id, c.req.param('id')), eq(m.userId, session.user.id)),
+    });
+    const path = asset && join(mediaDir, asset.storagePath);
+    const stats = path ? await stat(path).catch(() => null) : null;
+    if (!asset || !path || !stats) return c.body(null, 404);
+
+    const headers: Record<string, string> = {
+      'content-type': asset.mimeType,
+      'accept-ranges': 'bytes',
+      'cache-control': 'private, max-age=31536000, immutable',
+      'x-content-type-options': 'nosniff',
+    };
+    const range = /^bytes=(\d*)-(\d*)$/.exec(c.req.header('range') ?? '');
+    let start = 0;
+    let end = stats.size - 1;
+    if (range && (range[1] || range[2])) {
+      start = range[1] ? Number(range[1]) : Math.max(0, stats.size - Number(range[2]));
+      end = range[1] && range[2] ? Math.min(Number(range[2]), end) : end;
+      if (start > end) {
+        return c.body(null, 416, { 'content-range': `bytes */${stats.size}` });
+      }
+      headers['content-range'] = `bytes ${start}-${end}/${stats.size}`;
+    }
+    headers['content-length'] = String(end - start + 1);
+    const body = Readable.toWeb(createReadStream(path, { start, end })) as ReadableStream;
+    return c.body(body, range && headers['content-range'] ? 206 : 200, headers);
+  });
+
   // oRPC: typed procedures shared with the web app.
   const rpcHandler = new RPCHandler(router, {
     interceptors: [
@@ -121,7 +159,7 @@ export function createApp({
     const session = await getSession(c.req.raw.headers);
     const { matched, response } = await rpcHandler.handle(c.req.raw, {
       prefix: '/rpc',
-      context: { db, session, integrations: providerApps.current, providerApps, vault },
+      context: { db, session, integrations: providerApps.current, providerApps, vault, mediaDir },
     });
     if (matched) return c.newResponse(response.body, response);
     await next();

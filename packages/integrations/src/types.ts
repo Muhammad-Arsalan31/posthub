@@ -16,14 +16,27 @@ export interface MediaFile {
 
 export interface PublishInput {
   title: string;
+  /** Plain text, for platforms without rich text. */
   text: string;
+  /** The same body as HTML (WordPress). Built from `text` when absent. */
+  html?: string;
   link?: string;
   media: MediaFile[];
+  /** WordPress featured image. Defaults to the first image in `media`. */
+  featuredImage?: MediaFile;
+  /** YouTube custom thumbnail (JPEG or PNG, up to 2 MB). */
+  thumbnail?: MediaFile;
+  /** Images placed inside `html`: each <img src="ref"> becomes the uploaded file (WordPress). */
+  inlineImages?: Array<{ ref: string; file: MediaFile }>;
+  /** WordPress post settings for this site. */
+  wordpress?: { categoryIds: number[]; tags: string[] };
 }
 
 export interface PublishResult {
   externalId: string;
   url?: string;
+  /** Published, but an optional extra failed (e.g. the thumbnail). Shown to the owner. */
+  warning?: string;
 }
 
 /** An account produced by a connect flow, ready to be stored (credentials get encrypted). */

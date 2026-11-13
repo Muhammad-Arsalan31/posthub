@@ -26,6 +26,12 @@ export type PostStatus = (typeof POST_STATUSES)[number];
 export const TARGET_STATUSES = ['pending', 'publishing', 'published', 'failed', 'manual'] as const;
 export type TargetStatus = (typeof TARGET_STATUSES)[number];
 
+export interface WordPressPostOptions {
+  tags: string[];
+  /** Category ids on each site, keyed by social account id. */
+  categories: Record<string, number[]>;
+}
+
 const createdAt = () =>
   integer('created_at', { mode: 'timestamp_ms' })
     .notNull()
@@ -58,21 +64,25 @@ export const socialAccount = sqliteTable(
   (t) => [uniqueIndex('social_account_platform_external_idx').on(t.platform, t.externalId)],
 );
 
-/** Files copied into PostHub's local media folder. */
-export const mediaAsset = sqliteTable('media_asset', {
-  id: text('id').primaryKey(),
-  userId: text('user_id')
-    .notNull()
-    .references(() => user.id, { onDelete: 'cascade' }),
-  fileName: text('file_name').notNull(),
-  mimeType: text('mime_type').notNull(),
-  sizeBytes: integer('size_bytes').notNull(),
-  storagePath: text('storage_path').notNull(),
-  width: integer('width'),
-  height: integer('height'),
-  durationMs: integer('duration_ms'),
-  createdAt: createdAt(),
-});
+/** Files copied into PostHub's local media folder. `storagePath` is relative to the media folder. */
+export const mediaAsset = sqliteTable(
+  'media_asset',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    fileName: text('file_name').notNull(),
+    mimeType: text('mime_type').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    storagePath: text('storage_path').notNull(),
+    width: integer('width'),
+    height: integer('height'),
+    durationMs: integer('duration_ms'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('media_asset_user_idx').on(t.userId)],
+);
 
 export const post = sqliteTable(
   'post',
@@ -83,6 +93,18 @@ export const post = sqliteTable(
       .references(() => user.id, { onDelete: 'cascade' }),
     title: text('title').notNull(),
     body: text('body').notNull().default(''),
+    /** Optional link shared with the post (a separate field on platforms that support one). */
+    link: text('link'),
+    /** WordPress featured image. Null means the first attached image. */
+    featuredMediaId: text('featured_media_id').references(() => mediaAsset.id, {
+      onDelete: 'set null',
+    }),
+    /** WordPress tags (by name, shared by every site) and categories (ids, per account). */
+    wordpressOptions: text('wordpress_options', { mode: 'json' }).$type<WordPressPostOptions>(),
+    /** YouTube custom thumbnail. */
+    thumbnailMediaId: text('thumbnail_media_id').references(() => mediaAsset.id, {
+      onDelete: 'set null',
+    }),
     status: text('status', { enum: POST_STATUSES }).notNull().default('draft'),
     scheduledAt: integer('scheduled_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
@@ -105,7 +127,10 @@ export const postMedia = sqliteTable(
       .references(() => mediaAsset.id, { onDelete: 'cascade' }),
     position: integer('position').notNull().default(0),
   },
-  (t) => [primaryKey({ columns: [t.postId, t.mediaId] })],
+  (t) => [
+    primaryKey({ columns: [t.postId, t.mediaId] }),
+    index('post_media_media_idx').on(t.mediaId),
+  ],
 );
 
 /** One row per (post, account): each platform publishes, fails and retries independently. */
@@ -123,6 +148,8 @@ export const postTarget = sqliteTable(
     status: text('status', { enum: TARGET_STATUSES }).notNull().default('pending'),
     attempts: integer('attempts').notNull().default(0),
     lockedAt: integer('locked_at', { mode: 'timestamp_ms' }),
+    /** After a retryable failure: do not try again before this time. */
+    nextAttemptAt: integer('next_attempt_at', { mode: 'timestamp_ms' }),
     externalPostId: text('external_post_id'),
     externalUrl: text('external_url'),
     lastError: text('last_error'),

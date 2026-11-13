@@ -1,0 +1,1 @@
+ALTER TABLE `post` ADD `wordpress_options` text;

@@ -1,7 +1,14 @@
 // Self-hosted WordPress via the REST API with Application Passwords (Users → Profile → Application Passwords).
 import { PlatformError } from '../errors';
 import { fileBlob, request, type HttpDeps } from '../http';
-import { isImage, type ConnectedAccount, type PlatformAdapter } from '../types';
+import { decodeEntities, escapeHtml, textToHtml } from '../content';
+import {
+  isImage,
+  isVideo,
+  type ConnectedAccount,
+  type MediaFile,
+  type PlatformAdapter,
+} from '../types';
 
 export interface WordPressCredentials {
   siteUrl: string;
@@ -74,17 +81,64 @@ function authErrorMessage(error: PlatformError) {
   return `WordPress rejected the username or Application Password${typeof code === 'string' ? ` (${code})` : ''}.`;
 }
 
-/** Plain text to simple HTML paragraphs. */
-export function toHtml(text: string, link?: string) {
-  const escape = (s: string) =>
-    s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
-  const paragraphs = text
-    .split(/\n{2,}/)
-    .map((p) => p.trim())
-    .filter(Boolean)
-    .map((p) => `<p>${escape(p).replace(/\n/g, '<br>')}</p>`);
-  if (link) paragraphs.push(`<p><a href="${escape(link)}">${escape(link)}</a></p>`);
-  return paragraphs.join('\n');
+/** An uploaded attachment, embedded in the post as a block-editor image or video. */
+export interface EmbeddedMedia {
+  id: number;
+  url: string;
+  kind: 'image' | 'video';
+  /** Alt text, already HTML-escaped. */
+  alt?: string;
+}
+
+/** A category on a WordPress site, for the composer's picker. */
+export interface WordPressCategory {
+  id: number;
+  name: string;
+  parent: number;
+}
+
+function mediaBlock({ id, url, kind, alt = '' }: EmbeddedMedia) {
+  const src = escapeHtml(url);
+  return kind === 'image'
+    ? [
+        `<!-- wp:image {"id":${id},"sizeSlug":"large"} -->`,
+        `<figure class="wp-block-image size-large"><img src="${src}" alt="${alt}" class="wp-image-${id}"/></figure>`,
+        '<!-- /wp:image -->',
+      ].join('\n')
+    : [
+        `<!-- wp:video {"id":${id}} -->`,
+        `<figure class="wp-block-video"><video controls src="${src}"></video></figure>`,
+        '<!-- /wp:video -->',
+      ].join('\n');
+}
+
+const escapeRegExp = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Swaps each inline image (an <img> whose src is `ref`) for a WordPress image block, so it stays
+ * where it was written. A wrapping paragraph is dropped: a block can't sit inside one.
+ */
+export function replaceInlineImages(
+  html: string,
+  images: Array<{ ref: string; media: EmbeddedMedia }>,
+) {
+  let out = html;
+  for (const { ref, media } of images) {
+    const tag = new RegExp(`(<p>)?<img\\b[^>]*\\bsrc="${escapeRegExp(ref)}"[^>]*>(</p>)?`, 'gi');
+    out = out.replace(tag, (match) => {
+      const alt = /\balt="([^"]*)"/i.exec(match)?.[1] ?? '';
+      return `\n${mediaBlock({ ...media, alt })}\n`;
+    });
+  }
+  return out.replace(/\n{2,}/g, '\n').trim();
+}
+
+/** The post body (HTML), then the media, then the link. */
+export function postContent(html: string, link?: string, media: EmbeddedMedia[] = []) {
+  const parts = html.trim() ? [html.trim()] : [];
+  parts.push(...media.map(mediaBlock));
+  if (link) parts.push(`<p><a href="${escapeHtml(link)}">${escapeHtml(link)}</a></p>`);
+  return parts.join('\n');
 }
 
 export function createWordPress(deps: HttpDeps) {
@@ -157,11 +211,9 @@ export function createWordPress(deps: HttpDeps) {
     async publish(credentials, input) {
       const auth = basicAuth(credentials);
 
-      let featuredMedia: number | undefined;
-      const image = input.media.find(isImage);
-      if (image) {
-        const safeName = image.fileName.replace(/[^\w.-]+/g, '_');
-        const { data } = await request<{ id: number }>(
+      const upload = async (file: MediaFile) => {
+        const safeName = file.fileName.replace(/[^\w.-]+/g, '_');
+        const { data } = await request<{ id: number; source_url: string }>(
           deps,
           'wordpress',
           endpoint(credentials.apiBase, '/wp/v2/media'),
@@ -169,14 +221,47 @@ export function createWordPress(deps: HttpDeps) {
             method: 'POST',
             headers: {
               ...auth,
-              'content-type': image.mimeType,
+              'content-type': file.mimeType,
               'content-disposition': `attachment; filename="${safeName}"`,
             },
-            body: await fileBlob(image),
+            body: await fileBlob(file),
           },
         );
-        featuredMedia = data.id;
+        return data;
+      };
+
+      // Upload every image and video, in order. Many themes don't show the featured image on the
+      // post page, so attached media is also embedded in the content.
+      const embedded: Array<EmbeddedMedia & { path: string }> = [];
+      for (const file of input.media) {
+        const kind = isImage(file) ? 'image' : isVideo(file) ? 'video' : null;
+        if (!kind) continue;
+        const data = await upload(file);
+        embedded.push({ id: data.id, url: data.source_url, kind, path: file.path });
       }
+
+      // Images placed inside the text: uploaded once each, then swapped in where they were written.
+      const inline: Array<{ ref: string; media: EmbeddedMedia; path: string }> = [];
+      for (const { ref, file } of input.inlineImages ?? []) {
+        const data = await upload(file);
+        inline.push({
+          ref,
+          path: file.path,
+          media: { id: data.id, url: data.source_url, kind: 'image' },
+        });
+      }
+
+      // The chosen featured image (reusing an upload when possible), else the first image.
+      const uploadedId = (path: string) =>
+        embedded.find((m) => m.path === path)?.id ?? inline.find((m) => m.path === path)?.media.id;
+      const chosen = input.featuredImage;
+      const featuredMedia = chosen
+        ? (uploadedId(chosen.path) ?? (await upload(chosen)).id)
+        : (embedded.find((m) => m.kind === 'image')?.id ?? inline[0]?.media.id);
+
+      const options = input.wordpress;
+      const tagIds = options?.tags.length ? await resolveTags(credentials, options.tags) : [];
+      const html = replaceInlineImages(input.html ?? textToHtml(input.text), inline);
 
       const { data: post } = await request<{ id: number; link: string }>(
         deps,
@@ -187,9 +272,11 @@ export function createWordPress(deps: HttpDeps) {
           headers: { ...auth, 'content-type': 'application/json' },
           body: JSON.stringify({
             title: input.title,
-            content: toHtml(input.text, input.link),
+            content: postContent(html, input.link, embedded),
             status: 'publish',
             ...(featuredMedia ? { featured_media: featuredMedia } : {}),
+            ...(options?.categoryIds.length ? { categories: options.categoryIds } : {}),
+            ...(tagIds.length ? { tags: tagIds } : {}),
           }),
         },
       );
@@ -197,5 +284,69 @@ export function createWordPress(deps: HttpDeps) {
     },
   };
 
-  return { connect, adapter };
+  /** Tag ids by name, creating tags the site doesn't have yet. */
+  async function resolveTags(credentials: WordPressCredentials, names: string[]) {
+    const auth = basicAuth(credentials);
+    const ids: number[] = [];
+    for (const name of [...new Set(names.map((n) => n.trim()).filter(Boolean))]) {
+      const { data: found } = await request<Array<{ id: number; name: string }>>(
+        deps,
+        'wordpress',
+        endpoint(credentials.apiBase, '/wp/v2/tags', { search: name, per_page: '100' }),
+        { headers: auth },
+      );
+      // WordPress returns names HTML-escaped (e.g. "R&amp;D").
+      const match = found.find((t) => decodeEntities(t.name).toLowerCase() === name.toLowerCase());
+      if (match) {
+        ids.push(match.id);
+        continue;
+      }
+      try {
+        const { data: created } = await request<{ id: number }>(
+          deps,
+          'wordpress',
+          endpoint(credentials.apiBase, '/wp/v2/tags'),
+          {
+            method: 'POST',
+            headers: { ...auth, 'content-type': 'application/json' },
+            body: JSON.stringify({ name }),
+          },
+        );
+        ids.push(created.id);
+      } catch (error) {
+        // Already exists (e.g. differs only by accents): WordPress names the existing tag's id.
+        const body = error instanceof PlatformError ? error.body : undefined;
+        const termId = (body as { data?: { term_id?: unknown } } | undefined)?.data?.term_id;
+        if (typeof termId === 'number') {
+          ids.push(termId);
+          continue;
+        }
+        throw error;
+      }
+    }
+    return ids;
+  }
+
+  /** Every category on the site (up to 500), for picking when composing. */
+  async function categories(credentials: WordPressCredentials): Promise<WordPressCategory[]> {
+    const all: WordPressCategory[] = [];
+    for (let page = 1; page <= 5; page++) {
+      const { data, response } = await request<WordPressCategory[]>(
+        deps,
+        'wordpress',
+        endpoint(credentials.apiBase, '/wp/v2/categories', {
+          per_page: '100',
+          page: String(page),
+          orderby: 'name',
+          _fields: 'id,name,parent',
+        }),
+        { headers: basicAuth(credentials) },
+      );
+      all.push(...data.map((c) => ({ ...c, name: decodeEntities(c.name) })));
+      if (page >= Number(response.headers.get('x-wp-totalpages') ?? 1)) break;
+    }
+    return all;
+  }
+
+  return { connect, adapter, categories };
 }

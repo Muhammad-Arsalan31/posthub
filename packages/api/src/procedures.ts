@@ -12,6 +12,8 @@ export interface Context {
   /** Reads and changes developer-app credentials; changes apply immediately. */
   providerApps: IntegrationsManager;
   vault: Vault;
+  /** Folder holding uploaded media files. */
+  mediaDir: string;
 }
 
 export const publicProcedure = os.$context<Context>();

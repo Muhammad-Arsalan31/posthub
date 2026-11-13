@@ -39,7 +39,8 @@ function AppLayout() {
         </Group>
       </AppShell.Header>
       <AppShell.Navbar p="xs">
-        <NavLink component={Link} to="/" label="Posts" />
+        <NavLink component={Link} to="/" label="Posts" activeOptions={{ exact: false }} />
+        <NavLink component={Link} to="/media" label="Media" />
         <NavLink component={Link} to="/accounts" label="Accounts" />
       </AppShell.Navbar>
       <AppShell.Main>

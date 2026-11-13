@@ -1,0 +1,11 @@
+.content img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: var(--mantine-spacing-sm) 0;
+  border-radius: var(--mantine-radius-sm);
+}
+
+.content img:global(.ProseMirror-selectednode) {
+  outline: 2px solid var(--mantine-primary-color-filled);
+}

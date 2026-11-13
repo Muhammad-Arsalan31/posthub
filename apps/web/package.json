@@ -26,6 +26,7 @@
     "@tanstack/react-db": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",
+    "@tiptap/extension-image": "catalog:",
     "@tiptap/extension-link": "catalog:",
     "@tiptap/pm": "catalog:",
     "@tiptap/react": "catalog:",

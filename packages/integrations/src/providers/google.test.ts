@@ -79,6 +79,45 @@ describe('youtube', () => {
     expect(fake.calls[1]!.body).toBe('[binary]');
   });
 
+  it('sets a custom thumbnail, and only warns when that fails', async () => {
+    let thumbnailStatus = 200;
+    const fake = createFakeFetch([
+      [
+        'POST https://www.googleapis.com/upload/youtube/v3/videos',
+        () => new Response(null, { headers: { location: 'https://upload.example/session' } }),
+      ],
+      ['PUT https://upload.example/session', () => ({ id: 'vid1' })],
+      [
+        'POST https://www.googleapis.com/upload/youtube/v3/thumbnails/set',
+        () =>
+          thumbnailStatus === 200
+            ? {}
+            : Response.json({ error: { message: 'Forbidden' } }, { status: thumbnailStatus }),
+      ],
+    ]);
+    const adapter = createIntegrations(config, fake).adapter('youtube')!;
+    const input = {
+      title: 'Launch',
+      text: 'Description',
+      media: [tempMedia('clip.mp4', 'video/mp4')],
+      thumbnail: tempMedia('thumb.png', 'image/png'),
+    };
+
+    expect(await adapter.publish(creds, input)).toEqual({
+      externalId: 'vid1',
+      url: 'https://youtu.be/vid1',
+    });
+    expect(fake.calls[2]!.url).toBe(
+      'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=vid1',
+    );
+    expect(fake.calls[2]!.headers.get('content-type')).toBe('image/png');
+
+    thumbnailStatus = 403;
+    const result = await adapter.publish(creds, input);
+    expect(result).toMatchObject({ externalId: 'vid1' });
+    expect(result.warning).toMatch(/thumbnail was not set: Forbidden/);
+  });
+
   it('refuses posts without a video, without retrying', async () => {
     const error = await createIntegrations(config)
       .adapter('youtube')!

@@ -98,7 +98,7 @@ export function createIntegrations(config: IntegrationsConfig, deps: Integration
   return {
     oauth: (id: string) => providers.get(id as OAuthProviderId),
     adapter: (platform: Platform) => adapters.get(platform),
-    wordpress: { connect: wordpress.connect },
+    wordpress: { connect: wordpress.connect, categories: wordpress.categories },
     status: () =>
       PROVIDERS.map((p) => ({
         ...p,

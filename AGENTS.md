@@ -19,6 +19,8 @@ system, and must publish scheduled posts reliably even when no browser window is
 apps/web/            React PWA
   src/routes/        file-based routes; routeTree.gen.ts is GENERATED, never edit it
   src/collections/   TanStack DB collections (oRPC-backed)
+  src/components/    post-editor (composer), media (dropzone, library, thumbnails)
+  src/lib/platforms.ts  platform labels + publishing rules (mirrors api src/post-rules.ts)
   src/lib/           orpc client, auth client, query client
   src/providers.tsx  MantineProviders: theme, package CSS, Dates/Modals/Notifications (app + tests)
   src/test/          test setup + renderRoute() helper
@@ -30,6 +32,8 @@ packages/db/         Drizzle schema (src/schema), migrations (drizzle/), createD
 packages/auth/       createAuth(): better-auth config
 packages/api/        oRPC router (src/index.ts), procedures (src/procedures.ts), routers/
   src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows)
+  src/publisher.ts   background publishing worker (started by apps/server/src/index.ts)
+  src/post-rules.ts  what each platform can publish; checked before a post is scheduled
   src/testing.ts     testContext(), sessionFor() for procedure tests (@posthub/api/testing)
 packages/integrations/  platform connectors: no DB access, injectable fetch
   src/providers/     google (YouTube), meta (Facebook + Instagram), linkedin, wordpress
@@ -66,6 +70,8 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   (127.0.0.1:4100). Everything is same-origin, so auth cookies need no CORS setup.
 - In production, the server serves `apps/web/dist` itself, also same-origin.
 - `/api/auth/*` is better-auth. `/rpc/*` is oRPC, and the session is resolved per request and put in the context.
+- `/files/:id` streams an uploaded media file to its owner (Range supported). Uploads go through oRPC
+  (`media.upload` takes a `File`) and land in the media folder.
 - `/connect/:provider/start` and `/connect/:provider/callback` are the platform OAuth redirects (plain Hono
   routes, because they are browser navigations). They finish by redirecting to `/accounts?connected=N` or `?error=...`.
 
@@ -146,8 +152,22 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   isn't available for private tools.
 - Instagram needs a **public media URL** (`MediaFile.publicUrl`); local files alone are not enough. YouTube needs a video.
   LinkedIn supports text, link, and single-image posts (video comes later).
-- Planned next: media uploads, then a publishing worker in the server (claims due `post_target` rows, calls
-  `refreshIfExpiring` and the adapter, and records the result), then a Windows startup/Electron shell.
+- **Post lifecycle:** the owner sets `draft` or `scheduled` ("Publish now" means scheduled at now). The publisher moves a
+  due post to `publishing`, claims each `pending` target, and the post ends `published`/`failed` based on its targets.
+  Posts are editable only while `draft`/`scheduled`. Failed targets are retried with `posts.retry`, and TikTok targets are
+  closed with `posts.markPosted`.
+- Retryable `PlatformError`s back off (`RETRY_DELAYS_MS`, `next_attempt_at`). A target found `publishing` at startup, or a
+  non-`PlatformError` during the publish call, is marked failed for the owner to check. It is never retried automatically.
+- `post.body` is HTML from the Tiptap editor (older posts may be plain text). The publisher passes `html` (WordPress) and
+  `text` (everyone else) via `bodyFormats()` in `packages/integrations/src/content.ts`. Per-platform images:
+  `featuredMediaId` (WordPress, falls back to the first attached image) and `thumbnailMediaId` (YouTube; a failed thumbnail
+  is a `PublishResult.warning` stored in `lastError` on a published target, never a retry).
+- Images inside the body are `<img src="/files/<media id>">` (see `packages/api/src/inline-media.ts`). The publisher passes
+  them as `inlineImages`; the WordPress adapter uploads each and swaps it for an image block in place. Other platforms drop
+  them (they only get attached media). `post.wordpressOptions` holds tags (names, created on the site if missing) and
+  categories per WordPress account id.
+- When changing what an adapter accepts, update `packages/api/src/post-rules.ts` and `apps/web/src/lib/platforms.ts` together.
+- Planned next: public media URLs (for Instagram), LinkedIn video, then a Windows startup/Electron shell.
 
 ## Environment
 

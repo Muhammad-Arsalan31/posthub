@@ -1,6 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import { serve } from '@hono/node-server';
-import { createIntegrationsManager } from '@posthub/api';
+import { createIntegrationsManager, createPublisher } from '@posthub/api';
 import { createAuth } from '@posthub/auth';
 import { createDb, runMigrations } from '@posthub/db';
 import { createVault } from '@posthub/integrations';
@@ -18,6 +18,15 @@ const vault = createVault(env.encryptionKey);
 const providerApps = createIntegrationsManager({ db, vault, envConfig: env.integrations });
 const app = createApp({ db, auth, providerApps, vault });
 
+// Publishes due posts in the background, whether or not a browser is open.
+const publisher = createPublisher({
+  db,
+  vault,
+  integrations: () => providerApps.current,
+  mediaDir: env.mediaDir,
+});
+publisher.start();
+
 const server = serve({ fetch: app.fetch, port: env.port, hostname: '127.0.0.1' }, (info) => {
   const enabled = providerApps.current
     .status()
@@ -27,6 +36,10 @@ const server = serve({ fetch: app.fetch, port: env.port, hostname: '127.0.0.1' }
   console.log(`Connectors: ${enabled.join(', ')}`);
 });
 
-const shutdown = () => server.close(() => process.exit(0));
+const shutdown = () => {
+  // Let uploads in progress finish so they aren't left uncertain on the next start.
+  server.close();
+  void publisher.stop().finally(() => process.exit(0));
+};
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);

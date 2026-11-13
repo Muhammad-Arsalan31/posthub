@@ -1,3 +1,6 @@
+import { mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { AuthSession } from '@posthub/auth';
 import type { Db } from '@posthub/db';
 import { createVault, type IntegrationDeps, type IntegrationsConfig } from '@posthub/integrations';
@@ -29,6 +32,7 @@ export function testContext(
   db: Db,
   session: AuthSession | null,
   integrations: { config?: IntegrationsConfig; deps?: IntegrationDeps } = {},
+  mediaDir = mkdtempSync(join(tmpdir(), 'posthub-media-')),
 ): Context {
   const vault = createVault(TEST_ENCRYPTION_KEY);
   const providerApps = createIntegrationsManager({
@@ -41,6 +45,7 @@ export function testContext(
     db,
     session,
     vault,
+    mediaDir,
     providerApps,
     // A getter, so saving credentials mid-test is visible like a fresh request would see it.
     get integrations() {

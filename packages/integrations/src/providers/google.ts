@@ -27,6 +27,7 @@ const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const API = 'https://www.googleapis.com/youtube/v3';
 const UPLOAD_URL =
   'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status';
+const THUMBNAIL_URL = 'https://www.googleapis.com/upload/youtube/v3/thumbnails/set';
 const SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube.readonly',
@@ -158,7 +159,31 @@ export function createGoogle(config: GoogleConfig, deps: HttpDeps) {
         headers: { ...bearer(credentials.accessToken), 'content-type': video.mimeType },
         body: await fileBlob(video),
       });
-      return { externalId: data.id, url: `https://youtu.be/${data.id}` };
+      const result = { externalId: data.id, url: `https://youtu.be/${data.id}` };
+
+      // 3. Optional custom thumbnail. The video exists now, so nothing below may throw:
+      //    a failure becomes a warning instead of a retry that would upload the video twice.
+      if (input.thumbnail) {
+        try {
+          const url = `${THUMBNAIL_URL}?videoId=${encodeURIComponent(data.id)}`;
+          await request(deps, 'youtube', url, {
+            method: 'POST',
+            headers: {
+              ...bearer(credentials.accessToken),
+              'content-type': input.thumbnail.mimeType,
+            },
+            body: await fileBlob(input.thumbnail),
+          });
+        } catch (error) {
+          const reason =
+            error instanceof Error ? error.message.replace(/^youtube: /, '') : String(error);
+          return {
+            ...result,
+            warning: `Published, but the thumbnail was not set: ${reason}. Custom thumbnails need a verified YouTube channel.`,
+          };
+        }
+      }
+      return result;
     },
   };
 

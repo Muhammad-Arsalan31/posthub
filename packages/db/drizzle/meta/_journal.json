@@ -22,6 +22,27 @@
       "when": 1794566931030,
       "tag": "0002_brave_overlord",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1794568321319,
+      "tag": "0003_tiresome_lionheart",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1794569641078,
+      "tag": "0004_far_frank_castle",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1794570286775,
+      "tag": "0005_furry_celestials",
+      "breakpoints": true
     }
   ]
 }

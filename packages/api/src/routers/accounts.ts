@@ -1,6 +1,6 @@
 import { ORPCError } from '@orpc/server';
 import { socialAccount } from '@posthub/db';
-import { PlatformError } from '@posthub/integrations';
+import { PlatformError, type WordPressCredentials } from '@posthub/integrations';
 import { and, asc, eq } from 'drizzle-orm';
 import { z } from 'zod';
 import { saveAccounts } from '../connections';
@@ -52,6 +52,34 @@ export const accountsRouter = {
       } catch (error) {
         if (error instanceof PlatformError) {
           throw new ORPCError('BAD_REQUEST', { message: error.message });
+        }
+        throw error;
+      }
+    }),
+
+  /** Categories on a connected WordPress site, for the composer. */
+  wordpressCategories: protectedProcedure
+    .input(z.object({ accountId: z.string() }))
+    .handler(async ({ context, input }) => {
+      const account = context.db
+        .select({ credentials: socialAccount.credentials })
+        .from(socialAccount)
+        .where(
+          and(
+            eq(socialAccount.id, input.accountId),
+            eq(socialAccount.userId, context.user.id),
+            eq(socialAccount.platform, 'wordpress'),
+          ),
+        )
+        .get();
+      if (!account?.credentials) throw new ORPCError('NOT_FOUND');
+      try {
+        return await context.integrations.wordpress.categories(
+          context.vault.decrypt<WordPressCredentials>(account.credentials),
+        );
+      } catch (error) {
+        if (error instanceof PlatformError) {
+          throw new ORPCError('BAD_GATEWAY', { message: error.message });
         }
         throw error;
       }
