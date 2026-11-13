@@ -5,6 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" href="/logo.svg" type="image/svg+xml" />
     <title>PostHub</title>
+    <script>
+      // Apply the saved color scheme before first paint (mirrors Mantine's ColorSchemeScript).
+      try {
+        var s = localStorage.getItem('mantine-color-scheme-value') || 'auto';
+        if (s === 'auto') s = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        document.documentElement.setAttribute('data-mantine-color-scheme', s);
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>

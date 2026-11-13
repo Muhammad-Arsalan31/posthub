@@ -1,5 +1,6 @@
 import { AppShell, Button, Group, NavLink, Text, Title } from '@mantine/core';
 import { createFileRoute, Link, Outlet, redirect, useNavigate } from '@tanstack/react-router';
+import { ThemeToggle } from '../components/theme-toggle';
 import { authClient } from '../lib/auth-client';
 
 /** Layout + auth guard for every signed-in page. */
@@ -30,6 +31,7 @@ function AppLayout() {
             <Text size="sm" c="dimmed">
               {session.user.email}
             </Text>
+            <ThemeToggle />
             <Button size="xs" variant="default" onClick={signOut}>
               Sign out
             </Button>
