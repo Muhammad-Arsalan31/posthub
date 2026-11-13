@@ -10,17 +10,31 @@
     "test": "vp test"
   },
   "dependencies": {
+    "@mantine/charts": "catalog:",
     "@mantine/core": "catalog:",
+    "@mantine/dates": "catalog:",
+    "@mantine/dropzone": "catalog:",
+    "@mantine/emoji": "catalog:",
+    "@mantine/form": "catalog:",
     "@mantine/hooks": "catalog:",
+    "@mantine/modals": "catalog:",
+    "@mantine/notifications": "catalog:",
+    "@mantine/tiptap": "catalog:",
     "@orpc/client": "catalog:",
     "@orpc/tanstack-query": "catalog:",
     "@tanstack/query-db-collection": "catalog:",
     "@tanstack/react-db": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-router": "catalog:",
+    "@tiptap/extension-link": "catalog:",
+    "@tiptap/pm": "catalog:",
+    "@tiptap/react": "catalog:",
+    "@tiptap/starter-kit": "catalog:",
     "better-auth": "catalog:",
+    "dayjs": "catalog:",
     "react": "catalog:",
-    "react-dom": "catalog:"
+    "react-dom": "catalog:",
+    "recharts": "catalog:"
   },
   "devDependencies": {
     "@orpc/server": "catalog:",
