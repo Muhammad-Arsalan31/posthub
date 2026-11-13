@@ -10,4 +10,9 @@ dist
 .env.*
 !.env.example
 apps/web/dev-dist
+.tanstack
 *.log
+
+# Agent skills: installed from skills-lock.json
+.agents/skills/
+.claude/skills/
