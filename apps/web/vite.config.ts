@@ -16,6 +16,13 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      // Off by default in `vite dev`: without it there is no manifest link or service worker
+      // on :5173, so browsers never offer to install the app. Output goes to dev-dist/ (ignored).
+      devOptions: {
+        enabled: true,
+        // Only the app shell falls back to index.html; /api, /rpc and /connect go to the proxy.
+        navigateFallbackAllowlist: [/^\/$/],
+      },
       pwaAssets: {
         image: 'public/logo.svg',
         preset: 'minimal-2023',
