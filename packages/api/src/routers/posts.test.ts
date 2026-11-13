@@ -1,25 +1,10 @@
 import { call, ORPCError } from '@orpc/server';
-import type { AuthSession } from '@posthub/auth';
 import type { Db } from '@posthub/db';
 import { createTestDb, seedUser } from '@posthub/db/testing';
 import { beforeEach, describe, expect, it } from 'vite-plus/test';
 import { router } from '../index';
 import type { Context } from '../procedures';
-
-function sessionFor(u: { id: string; email: string; name: string }): AuthSession {
-  const now = new Date();
-  return {
-    user: { ...u, emailVerified: false, image: null, createdAt: now, updatedAt: now },
-    session: {
-      id: crypto.randomUUID(),
-      token: 'test',
-      userId: u.id,
-      expiresAt: new Date(Date.now() + 60_000),
-      createdAt: now,
-      updatedAt: now,
-    },
-  } as AuthSession;
-}
+import { sessionFor, testContext } from '../testing';
 
 describe('posts router', () => {
   let db: Db;
@@ -27,12 +12,12 @@ describe('posts router', () => {
 
   beforeEach(() => {
     db = createTestDb();
-    ctx = { db, session: sessionFor(seedUser(db)) };
+    ctx = testContext(db, sessionFor(seedUser(db)));
   });
 
   it('rejects anonymous callers', async () => {
     await expect(
-      call(router.posts.list, undefined, { context: { db, session: null } }),
+      call(router.posts.list, undefined, { context: testContext(db, null) }),
     ).rejects.toSatisfy((e) => e instanceof ORPCError && e.code === 'UNAUTHORIZED');
   });
 
@@ -58,7 +43,7 @@ describe('posts router', () => {
     const id = crypto.randomUUID();
     await call(router.posts.create, { id, title: 'Mine' }, { context: ctx });
 
-    const other: Context = { db, session: sessionFor(seedUser(db)) };
+    const other = testContext(db, sessionFor(seedUser(db)));
     expect(await call(router.posts.list, undefined, { context: other })).toHaveLength(0);
     await expect(
       call(router.posts.update, { id, changes: { title: 'Stolen' } }, { context: other }),

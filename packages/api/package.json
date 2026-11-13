@@ -4,7 +4,8 @@
   "private": true,
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./src/testing.ts"
   },
   "scripts": {
     "test": "vp test"
@@ -13,6 +14,7 @@
     "@orpc/server": "catalog:",
     "@posthub/auth": "workspace:*",
     "@posthub/db": "workspace:*",
+    "@posthub/integrations": "workspace:*",
     "drizzle-orm": "catalog:",
     "zod": "catalog:"
   },

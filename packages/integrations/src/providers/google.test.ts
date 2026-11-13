@@ -1,0 +1,101 @@
+import { describe, expect, it } from 'vite-plus/test';
+import { createIntegrations } from '../registry';
+import { createFakeFetch, formParams, tempMedia } from '../testing';
+import type { YouTubeCredentials } from './google';
+
+const config = { google: { clientId: 'gid', clientSecret: 'gsecret' } };
+const creds: YouTubeCredentials = { accessToken: 'at', refreshToken: 'rt', expiresAt: 0 };
+
+describe('youtube', () => {
+  it('builds an offline consent URL', () => {
+    const url = new URL(
+      createIntegrations(config).oauth('google')!.authorizationUrl({
+        state: 's1',
+        redirectUri: 'http://localhost:5173/connect/google/callback',
+      }),
+    );
+    expect(url.origin).toBe('https://accounts.google.com');
+    expect(url.searchParams.get('access_type')).toBe('offline');
+    expect(url.searchParams.get('state')).toBe('s1');
+    expect(url.searchParams.get('scope')).toContain('youtube.upload');
+  });
+
+  it('exchanges the code and returns each channel', async () => {
+    const fake = createFakeFetch([
+      [
+        'POST https://oauth2.googleapis.com/token',
+        () => ({ access_token: 'at', refresh_token: 'rt', expires_in: 3600 }),
+      ],
+      [
+        'GET https://www.googleapis.com/youtube/v3/channels',
+        () => ({ items: [{ id: 'UC1', snippet: { title: 'My Channel' } }] }),
+      ],
+    ]);
+    const accounts = await createIntegrations(config, fake)
+      .oauth('google')!
+      .connect({ code: 'c1', redirectUri: 'http://cb' });
+
+    expect(formParams(fake.calls[0]!.body).get('code')).toBe('c1');
+    expect(fake.calls[1]!.headers.get('authorization')).toBe('Bearer at');
+    expect(accounts).toEqual([
+      expect.objectContaining({
+        platform: 'youtube',
+        externalId: 'UC1',
+        displayName: 'My Channel',
+        credentials: expect.objectContaining({ refreshToken: 'rt' }),
+      }),
+    ]);
+  });
+
+  it('fails clearly when Google omits the refresh token', async () => {
+    const fake = createFakeFetch([
+      ['POST https://oauth2.googleapis.com/token', () => ({ access_token: 'at', expires_in: 1 })],
+    ]);
+    await expect(
+      createIntegrations(config, fake).oauth('google')!.connect({ code: 'c', redirectUri: 'x' }),
+    ).rejects.toThrow(/refresh token/);
+  });
+
+  it('uploads a video with a resumable session', async () => {
+    const fake = createFakeFetch([
+      [
+        'POST https://www.googleapis.com/upload/youtube/v3/videos',
+        () => new Response(null, { headers: { location: 'https://upload.example/session' } }),
+      ],
+      ['PUT https://upload.example/session', () => ({ id: 'vid1' })],
+    ]);
+    const result = await createIntegrations(config, fake)
+      .adapter('youtube')!
+      .publish(creds, {
+        title: 'Launch <day>',
+        text: 'Description',
+        media: [tempMedia('clip.mp4', 'video/mp4')],
+      });
+
+    expect(result).toEqual({ externalId: 'vid1', url: 'https://youtu.be/vid1' });
+    const meta = JSON.parse(fake.calls[0]!.body as string);
+    expect(meta.snippet.title).toBe('Launch day');
+    expect(fake.calls[0]!.headers.get('x-upload-content-type')).toBe('video/mp4');
+    expect(fake.calls[1]!.body).toBe('[binary]');
+  });
+
+  it('refuses posts without a video, without retrying', async () => {
+    const error = await createIntegrations(config)
+      .adapter('youtube')!
+      .publish(creds, { title: 't', text: 'x', media: [] })
+      .catch((e: unknown) => e);
+    expect(error).toMatchObject({ retryable: false });
+  });
+
+  it('refreshes the access token', async () => {
+    const fake = createFakeFetch([
+      [
+        'POST https://oauth2.googleapis.com/token',
+        () => ({ access_token: 'new', expires_in: 3600 }),
+      ],
+    ]);
+    const refreshed = await createIntegrations(config, fake).adapter('youtube')!.refresh!(creds);
+    expect(refreshed.credentials).toMatchObject({ accessToken: 'new', refreshToken: 'rt' });
+    expect(formParams(fake.calls[0]!.body).get('grant_type')).toBe('refresh_token');
+  });
+});

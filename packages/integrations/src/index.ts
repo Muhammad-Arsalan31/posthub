@@ -1,0 +1,16 @@
+export * from './types';
+export { PlatformError } from './errors';
+export { createVault, type Vault } from './vault';
+export { refreshIfExpiring } from './refresh';
+export {
+  createIntegrations,
+  PROVIDERS,
+  type IntegrationDeps,
+  type IntegrationsConfig,
+  type Integrations,
+  type ProviderInfo,
+} from './registry';
+export type { GoogleConfig, YouTubeCredentials } from './providers/google';
+export type { MetaConfig, FacebookPageCredentials, InstagramCredentials } from './providers/meta';
+export type { LinkedInConfig, LinkedInCredentials } from './providers/linkedin';
+export type { WordPressCredentials, WordPressConnectInput } from './providers/wordpress';

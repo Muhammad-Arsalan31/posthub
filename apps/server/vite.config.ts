@@ -16,6 +16,9 @@ export default defineConfig({
   },
   test: {
     environment: 'node',
-    env: { BETTER_AUTH_SECRET: 'test-secret-test-secret-test-secret!' },
+    env: {
+      BETTER_AUTH_SECRET: 'test-secret-test-secret-test-secret!',
+      POSTHUB_ENCRYPTION_KEY: 'test-encryption-key-test-encryption-key',
+    },
   },
 });

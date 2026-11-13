@@ -32,8 +32,8 @@ export default defineConfig({
       },
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
-        // API, auth and RPC calls must always hit the server.
-        navigateFallbackDenylist: [/^\/api\//, /^\/rpc\//],
+        // API, auth, RPC and OAuth routes must always hit the server.
+        navigateFallbackDenylist: [/^\/api\//, /^\/rpc\//, /^\/connect\//],
       },
     }),
   ],
@@ -47,6 +47,7 @@ export default defineConfig({
     proxy: {
       '/api': apiTarget,
       '/rpc': apiTarget,
+      '/connect': apiTarget,
     },
   },
 });

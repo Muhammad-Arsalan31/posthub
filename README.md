@@ -1,6 +1,6 @@
 # PostHub
 
-A local social media manager (YouTube, LinkedIn, Facebook, Instagram, TikTok, WordPress).
+A local social media manager (YouTube, LinkedIn, Facebook, Instagram, WordPress).
 
 ## Stack
 

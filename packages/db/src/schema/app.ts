@@ -135,3 +135,23 @@ export const postTarget = sqliteTable(
     index('post_target_status_idx').on(t.status),
   ],
 );
+
+/** Short-lived OAuth `state` values: CSRF protection for platform connect flows. */
+export const oauthState = sqliteTable('oauth_state', {
+  state: text('state').primaryKey(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  provider: text('provider').notNull(),
+  createdAt: createdAt(),
+});
+
+/**
+ * Developer-app credentials per OAuth provider (client id/secret), entered in the UI.
+ * `config` is vault-encrypted JSON. Overrides values from apps/server/.env.
+ */
+export const providerApp = sqliteTable('provider_app', {
+  provider: text('provider').primaryKey(),
+  config: text('config').notNull(),
+  updatedAt: updatedAt(),
+});

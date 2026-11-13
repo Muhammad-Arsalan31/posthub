@@ -15,6 +15,7 @@
     "@posthub/api": "workspace:*",
     "@posthub/auth": "workspace:*",
     "@posthub/db": "workspace:*",
+    "@posthub/integrations": "workspace:*",
     "better-sqlite3": "catalog:",
     "hono": "catalog:"
   },
