@@ -1,0 +1,27 @@
+{
+  "name": "@posthub/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts",
+    "./schema": "./src/schema/index.ts",
+    "./testing": "./src/testing.ts"
+  },
+  "scripts": {
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
+    "test": "vp test"
+  },
+  "dependencies": {
+    "better-sqlite3": "catalog:",
+    "drizzle-orm": "catalog:"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "catalog:",
+    "@types/node": "catalog:",
+    "drizzle-kit": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@posthub/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vpx --watch src/index.ts",
+    "build": "vp pack",
+    "start": "node dist/index.mjs",
+    "test": "vp test"
+  },
+  "dependencies": {
+    "@hono/node-server": "catalog:",
+    "@orpc/server": "catalog:",
+    "@posthub/api": "workspace:*",
+    "@posthub/auth": "workspace:*",
+    "@posthub/db": "workspace:*",
+    "better-sqlite3": "catalog:",
+    "hono": "catalog:"
+  },
+  "devDependencies": {
+    "@orpc/client": "catalog:",
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

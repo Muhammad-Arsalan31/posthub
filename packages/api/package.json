@@ -1,0 +1,23 @@
+{
+  "name": "@posthub/api",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "test": "vp test"
+  },
+  "dependencies": {
+    "@orpc/server": "catalog:",
+    "@posthub/auth": "workspace:*",
+    "@posthub/db": "workspace:*",
+    "drizzle-orm": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@types/node": "catalog:",
+    "vite-plus": "catalog:"
+  }
+}

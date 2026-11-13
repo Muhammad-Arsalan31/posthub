@@ -1,0 +1,63 @@
+packages:
+  - apps/*
+  - packages/*
+
+catalogMode: prefer
+
+catalog:
+  # tooling
+  vite-plus: 1.6.0
+  turbo: ^2.11.11
+  typescript: ^7.0.2
+  '@types/node': ^24.0.0
+  # frontend
+  react: ^19.3.1
+  react-dom: ^19.3.1
+  '@types/react': ^19.3.0
+  '@types/react-dom': ^19.3.0
+  '@vitejs/plugin-react': ^6.3.0
+  '@tanstack/react-router': ^1.170.46
+  '@tanstack/router-plugin': ^1.169.0
+  '@tanstack/react-router-devtools': ^1.167.3
+  '@tanstack/react-query': ^5.107.1
+  '@tanstack/react-db': 1.0.0-rc.1.5
+  '@tanstack/query-db-collection': ^1.5.2
+  '@mantine/core': ^9.8.0
+  '@mantine/hooks': ^9.8.0
+  vite-plugin-pwa: ^2.0.0
+  '@vite-pwa/assets-generator': ^2.0.0
+  # api
+  hono: ^4.13.18
+  '@hono/node-server': ^2.1.8
+  '@orpc/server': ^1.16.2
+  '@orpc/client': ^1.16.2
+  '@orpc/tanstack-query': ^1.16.2
+  zod: ^4.6.7
+  better-auth: ^1.7.22
+  # database
+  drizzle-orm: ^0.45.4
+  drizzle-kit: ^0.31.11
+  better-sqlite3: ^13.1.1
+  '@types/better-sqlite3': ^9.6.0
+  # testing
+  jsdom: ^31.0.1
+  '@testing-library/react': ^16.3.3
+  '@testing-library/user-event': ^14.6.10
+
+# Vite+ ships its own Vite core; every plugin resolves `vite` to it.
+overrides:
+  vite: npm:@voidzero-dev/vite-plus-core@1.6.0
+
+allowBuilds:
+  better-sqlite3: true
+  esbuild: true
+  sharp: true
+
+minimumReleaseAgeExclude:
+  - '@hono/node-server@2.1.8'
+  - jsdom@31.0.1
+
+# vite-plus-core reports its own version (1.x), not Vite 8 — plugins work with it.
+peerDependencyRules:
+  allowAny:
+    - vite
