@@ -16,3 +16,6 @@ apps/web/dev-dist
 # Agent skills: installed from skills-lock.json
 .agents/skills/
 .claude/skills/
+
+# Plans
+.plans/
