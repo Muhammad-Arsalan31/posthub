@@ -19,7 +19,7 @@ export function MantineProviders({ children }: { children: ReactNode }) {
     <MantineProvider theme={theme} defaultColorScheme="auto">
       <DatesProvider settings={{ firstDayOfWeek: 1 }}>
         <ModalsProvider>
-          <Notifications position="top-right" />
+          <Notifications position="top-right" layout="stacked" />
           {children}
         </ModalsProvider>
       </DatesProvider>
