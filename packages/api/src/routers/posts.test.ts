@@ -397,4 +397,38 @@ describe('posts router', () => {
       ctx.api.posts.create({ id: crypto.randomUUID(), title: 'x', link: 'javascript:alert(1)' }),
     ).rejects.toMatchObject({ message: expect.stringMatching(/valid http/) });
   });
+
+  it('rejects malformed URLs in raw requests and preserves valid HTTP links', async () => {
+    for (const link of [
+      'https://example.com:abc',
+      'https://[invalid',
+      'https://example.com:99999',
+      'ftp://example.com',
+      `https://example.com/${'x'.repeat(2000)}`,
+    ]) {
+      for (const [path, body] of [
+        ['/rpc/posts', { id: crypto.randomUUID(), title: 'Link', link }],
+        ['/rpc/posts/update', { id: 'missing', changes: { link } }],
+        ['/rpc/posts/mark-posted', { targetId: 'missing', url: link }],
+      ] as const) {
+        const response = await ctx.fetch(path, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(400);
+        expect(await response.json()).toMatchObject({ _tag: 'BadRequest' });
+      }
+    }
+    expect(await ctx.api.posts.list()).toEqual([]);
+    for (const link of [
+      'https://example.com/article?q=hello#section',
+      'http://localhost:4100/article',
+      'https://[::1]:443/article',
+      'https://例え.jp/記事',
+    ]) {
+      const created = await ctx.api.posts.create({ id: crypto.randomUUID(), title: 'Link', link });
+      expect(created.link).toBe(link);
+    }
+  });
 });

@@ -34,6 +34,28 @@ function fake(respond: (request: Request) => Response) {
 }
 
 describe('fetchApiClient', () => {
+  it('rejects malformed URLs before sending any request', async () => {
+    const { client, requests } = fake(() => Response.json(post));
+    for (const link of [
+      'https://example.com:abc',
+      'https://[invalid',
+      'https://example.com:99999',
+      'ftp://example.com',
+      `https://example.com/${'x'.repeat(2000)}`,
+    ]) {
+      await expect(
+        client.posts.create({ id: crypto.randomUUID(), title: 'Link', link }),
+      ).rejects.toBeInstanceOf(Error);
+      await expect(client.posts.update({ id: 'p1', changes: { link } })).rejects.toBeInstanceOf(
+        Error,
+      );
+      await expect(client.posts.markPosted({ targetId: 't1', url: link })).rejects.toBeInstanceOf(
+        Error,
+      );
+    }
+    expect(requests).toHaveLength(0);
+  });
+
   it('calls endpoints by group and decodes dates', async () => {
     const { client, requests } = fake(() => Response.json([post]));
     const [first] = await client.posts.list();

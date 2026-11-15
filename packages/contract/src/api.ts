@@ -53,7 +53,17 @@ const bounded = (max: number) => Schema.String.check(Schema.isMaxLength(max));
 const required = (max: number) =>
   bounded(max).check(Schema.isPattern(/\S/, { message: 'This field is required.' }));
 const HttpUrl = bounded(2000).check(
-  Schema.isPattern(/^https?:\/\/[^\s/$.?#][^\s]*$/i, { message: 'Enter a valid http(s) URL.' }),
+  Schema.makeFilter(
+    (value) => {
+      try {
+        const url = new URL(value);
+        return url.protocol === 'http:' || url.protocol === 'https:';
+      } catch {
+        return false;
+      }
+    },
+    { message: 'Enter a valid http(s) URL.' },
+  ),
 );
 
 /** Input constraints stay separate from stored options so older posts remain readable. */
