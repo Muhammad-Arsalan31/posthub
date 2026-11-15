@@ -1,6 +1,6 @@
 // Plain services the API's Effect code depends on. `apiLayer` (layer.ts) provides them all.
 import type { Db } from '@posthub/db';
-import { Context, Effect, Exit, Layer, Schema, Semaphore } from 'effect';
+import { Cause, Context, Effect, Exit, Layer, Schema } from 'effect';
 
 /** SQLite refused a statement (constraint, disk, corrupt file...). Unexpected for callers. */
 export class DatabaseError extends Schema.TaggedError<DatabaseError>()('DatabaseError', {
@@ -15,8 +15,13 @@ export interface DatabaseService {
    */
   use<A>(query: (db: Db) => A): Effect.Effect<A, DatabaseError>;
   /**
-   * Runs `effect` in one transaction: committed if it succeeds, rolled back if it fails or is
-   * interrupted. Nested calls join the outer transaction.
+   * Runs `effect` in one transaction: committed if it succeeds, rolled back if it fails.
+   * Nested calls join the outer transaction.
+   *
+   * The effect runs synchronously, start to finish: it must not wait for anything (network,
+   * timers, other fibers). Waiting would leave the transaction open while other code, such as
+   * better-auth on the same connection, writes into it. If it tries, it is stopped, the
+   * transaction is rolled back, and it dies with an error saying so.
    */
   transaction<A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E | DatabaseError, R>;
 }
@@ -26,54 +31,72 @@ const InTransaction = Context.Reference<boolean>('@posthub/api/Database/InTransa
   defaultValue: () => false,
 });
 
+const describe = (cause: unknown) => (cause instanceof Error ? cause.message : String(cause));
+
 /**
- * The database as an Effect service. There is one SQLite connection, so statements from other
- * fibers must not run while a transaction is open (they would become part of it): a one-permit
- * lock serializes transactions and plain statements alike.
+ * The database as an Effect service. better-sqlite3 is synchronous and there is one connection,
+ * so running each transaction synchronously keeps every other statement out of it, exactly
+ * like `db.transaction(callback)` does.
  */
 export function makeDatabase(db: Db): DatabaseService {
-  const lock = Semaphore.makeUnsafe(1);
   const client = db.$client;
 
   const attempt = <A>(work: () => A, message: string) =>
     Effect.try({
       try: work,
-      catch: (cause) =>
-        new DatabaseError({
-          message: `${message}: ${cause instanceof Error ? cause.message : String(cause)}`,
-          cause,
-        }),
+      catch: (cause) => new DatabaseError({ message: `${message}: ${describe(cause)}`, cause }),
     });
 
   return {
-    use: (query) =>
-      Effect.flatMap(InTransaction, (inTransaction) => {
-        const run = attempt(() => query(db), 'Database query failed');
-        return inTransaction ? run : lock.withPermits(1)(run);
-      }),
+    use: (query) => attempt(() => query(db), 'Database query failed'),
 
-    transaction: (effect) =>
-      Effect.flatMap(InTransaction, (inTransaction) => {
-        if (inTransaction) return effect;
-        return lock.withPermits(1)(
-          Effect.uninterruptibleMask((restore) =>
-            Effect.gen(function* () {
-              yield* attempt(() => client.exec('BEGIN IMMEDIATE'), 'Could not start a transaction');
-              const exit = yield* Effect.exit(
-                restore(Effect.provideService(effect, InTransaction, true)),
-              );
-              if (Exit.isSuccess(exit)) {
-                yield* attempt(() => client.exec('COMMIT'), 'Could not commit').pipe(
-                  Effect.tapError(() => Effect.sync(() => client.exec('ROLLBACK'))),
+    transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+      Effect.flatMap(InTransaction, (inTransaction) =>
+        inTransaction
+          ? effect
+          : Effect.flatMap(Effect.context<R>(), (context) =>
+              Effect.suspend((): Effect.Effect<A, E | DatabaseError> => {
+                try {
+                  client.exec('BEGIN IMMEDIATE');
+                } catch (cause) {
+                  return Effect.fail(
+                    new DatabaseError({
+                      message: `Could not start a transaction: ${describe(cause)}`,
+                      cause,
+                    }),
+                  );
+                }
+                const exit = Effect.runSyncExitWith(Context.add(context, InTransaction, true))(
+                  effect,
                 );
-              } else {
-                client.exec('ROLLBACK');
-              }
-              return yield* exit;
-            }),
-          ),
-        );
-      }),
+                if (Exit.isFailure(exit)) {
+                  client.exec('ROLLBACK');
+                  const async = exit.cause.reasons.find(
+                    (reason) => Cause.isDieReason(reason) && Cause.isAsyncFiberError(reason.defect),
+                  );
+                  if (async && Cause.isDieReason(async) && Cause.isAsyncFiberError(async.defect)) {
+                    async.defect.fiber.interruptUnsafe();
+                    return Effect.die(
+                      new Error(
+                        'A database transaction waited for something asynchronous and was rolled ' +
+                          'back. Do network calls and other waiting before or after the transaction.',
+                      ),
+                    );
+                  }
+                  return exit;
+                }
+                try {
+                  client.exec('COMMIT');
+                } catch (cause) {
+                  client.exec('ROLLBACK');
+                  return Effect.fail(
+                    new DatabaseError({ message: `Could not commit: ${describe(cause)}`, cause }),
+                  );
+                }
+                return exit;
+              }),
+            ),
+      ),
   };
 }
 

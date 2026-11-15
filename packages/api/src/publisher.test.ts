@@ -4,7 +4,7 @@ import type { WordPressCredentials } from '@posthub/integrations';
 import { createFakeFetch } from '@posthub/integrations/testing';
 import { describe, expect, it } from '@effect/vitest';
 import { eq } from 'drizzle-orm';
-import { Context as Services, Effect, Layer } from 'effect';
+import { Context as Services, Deferred, Effect, Exit, Fiber, Layer, Scope } from 'effect';
 import { TestClock } from 'effect/testing';
 import { apiLayer } from './layer';
 import { INTERRUPTED_MESSAGE, Publisher, RETRY_DELAYS_MS } from './publisher';
@@ -20,6 +20,8 @@ const credentials: WordPressCredentials = {
 
 const setup = Effect.fnUntraced(function* (
   respond: () => unknown = () => ({ id: 7, link: 'https://blog.test/?p=7' }),
+  /** Scope the publisher lives in; defaults to the test's. Closing it is a shutdown. */
+  scope?: Scope.Scope,
 ) {
   yield* TestClock.setTime(new Date('2030-01-01T09:00:00Z').getTime());
   const db = createTestDb();
@@ -44,18 +46,17 @@ const setup = Effect.fnUntraced(function* (
     .returning()
     .get();
 
-  const services = yield* Layer.build(
-    Publisher.layer().pipe(
-      Layer.provideMerge(
-        apiLayer({
-          db,
-          encryptionKey: TEST_ENCRYPTION_KEY,
-          mediaDir: ctx.mediaDir,
-          integrationDeps: { fetch: fake.fetch },
-        }),
-      ),
+  const layer = Publisher.layer().pipe(
+    Layer.provideMerge(
+      apiLayer({
+        db,
+        encryptionKey: TEST_ENCRYPTION_KEY,
+        mediaDir: ctx.mediaDir,
+        integrationDeps: { fetch: fake.fetch },
+      }),
     ),
   );
+  const services = yield* scope ? Layer.buildWithScope(layer, scope) : Layer.build(layer);
   const publisher = Services.get(services, Publisher);
 
   return {
@@ -261,6 +262,31 @@ describe('publisher', () => {
       yield* publisher.tick;
       expect(fake.calls).toHaveLength(0);
       expect(state(db, id).target.lastError).toContain('Reconnect');
+    }),
+  );
+
+  it.effect('waits for a publish in progress when it shuts down', () =>
+    Effect.gen(function* () {
+      const sent = yield* Deferred.make<void>();
+      const reply = yield* Deferred.make<void>();
+      const scope = yield* Scope.make();
+      const { db, publisher, schedule } = yield* setup(async () => {
+        Effect.runSync(Deferred.succeed(sent, undefined));
+        await Effect.runPromise(Deferred.await(reply));
+        return { id: 9, link: 'https://blog.test/?p=9' };
+      }, scope);
+      const { id } = yield* schedule(new Date('2030-01-01T08:00:00Z'));
+
+      yield* publisher.startJobs;
+      yield* Deferred.await(sent);
+      // Shut down while WordPress is still answering: closing must wait for the job.
+      const closing = yield* Effect.forkChild(Scope.close(scope, Exit.void));
+      yield* Effect.yieldNow;
+      expect(state(db, id).target.status).toBe('publishing');
+      yield* Deferred.succeed(reply, undefined);
+      yield* Fiber.join(closing);
+
+      expect(state(db, id).target).toMatchObject({ status: 'published', externalPostId: '9' });
     }),
   );
 });

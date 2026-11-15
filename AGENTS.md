@@ -12,7 +12,7 @@ system, and must publish scheduled posts reliably even when no browser window is
 - **Web (`apps/web`):** React 19, TanStack Router (file routes), TanStack Query, TanStack DB, Mantine 9, PWA (vite-plugin-pwa).
 - **Server (`apps/server`):** Effect's HTTP server (`effect/http` on `@effect/platform-node`), HttpApi (`effect/http-api`), better-auth.
 - **Data:** Drizzle ORM + SQLite (better-sqlite3, native module).
-- **Effect:** Effect v4 (`effect` 4.1.x) for backend logic, being adopted package by package (connectors first).
+- **Effect:** Effect v4 (`effect` 4.1.x) for all backend logic: connectors, services, the HTTP API and server.
 
 ## Layout
 
@@ -35,7 +35,7 @@ packages/auth/       createAuth(): better-auth config
 packages/contract/   web-safe API contract: Effect Schema models, errors, HttpApi groups (src/api.ts),
                      Promise facade + fetchApiClient() used by the web app and tests
 packages/api/        HttpApi handlers (routers/<area>.ts, assembled in src/routes.ts), services, publisher
-  src/services.ts    Database, MediaDir services; layer.ts has apiLayer() (adds Vault, ProviderApps) and rpcContext()
+  src/services.ts    Database, MediaDir services; layer.ts has apiLayer() (adds Vault, ProviderApps)
   src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows, as Effects)
   src/publisher.ts   Publisher service + publisherWorker layer (background publishing, run by the server)
   src/post-rules.ts  what each platform can publish; checked before a post is scheduled
@@ -112,8 +112,9 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 - DB access happens only in the server/packages, never in the web app.
 - Effect code uses the `Database` service (`packages/api/src/services.ts`): `database.use((db) => db.select()...all())`
   runs Drizzle (synchronous on better-sqlite3) and fails with `DatabaseError`; `database.transaction(effect)` commits or
-  rolls back. There is one connection, so never call `db.transaction` directly: the service's lock keeps other fibers'
-  statements out of an open transaction.
+  rolls back. The transaction's effect runs synchronously (one connection, shared with better-auth), so it must not
+  wait for anything: do network calls before or after it. If it does wait, it is rolled back and dies. Never call
+  `db.transaction` directly.
 
 ### Web
 
@@ -142,9 +143,10 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   headers turned off). Use `Clock`/`Effect.sleep` rather than `Date.now()`/timers so tests can use `TestClock`.
 - Credentials are encrypted with the vault before storage, and `accounts.list` never selects them.
 - **Developer-app credentials** (client id/secret per OAuth provider) are entered on the Accounts page and stored
-  vault-encrypted in `provider_app`. the `ProviderApps` service (`packages/api/src/provider-apps.ts`) merges them
+  vault-encrypted in `provider_app`. The `ProviderApps` service (`packages/api/src/provider-apps.ts`) merges them
   over env values (`apps/server/src/env.ts`, DB wins field by field) and rebuilds the connectors on save, with no restart.
-  Read `context.integrations` (a per-request snapshot) to use connectors, and `context.providerApps` to change app credentials.
+  Read `(yield* ProviderApps).current` for the connectors as configured right now (per use, not once at startup), and
+  `save`/`remove` on the same service to change app credentials.
   Secrets are never returned to the client.
 - API versions are pinned: Meta Graph `v26.0` (`META_GRAPH_VERSION`), LinkedIn `202608` (`LINKEDIN_API_VERSION`).
   LinkedIn retires versions after about a year and returns 426 `NONEXISTENT_VERSION`.

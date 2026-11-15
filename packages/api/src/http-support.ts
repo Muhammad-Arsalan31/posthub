@@ -13,7 +13,7 @@ import type { Db } from '@posthub/db';
 import { Context, Effect, Layer } from 'effect';
 import { HttpServerRequest } from 'effect/http';
 import { HttpApiMiddleware } from 'effect/http-api';
-import { DatabaseError, type DatabaseService } from './services';
+import type { DatabaseService } from './services';
 
 /** Database access for HTTP handlers: a failing statement is a bug, so it becomes a defect (a logged 500). */
 export interface HandlerDatabase {
@@ -24,14 +24,9 @@ export interface HandlerDatabase {
 
 export const handlerDatabase = (database: DatabaseService): HandlerDatabase => ({
   query: (query) => Effect.orDie(database.use(query)),
-  transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-    // Only BEGIN/COMMIT can fail with a DatabaseError here: queries inside already die on errors.
-    database.transaction(effect).pipe(
-      Effect.catchIf(
-        (error): error is DatabaseError => error instanceof DatabaseError,
-        (error) => Effect.die(error),
-      ),
-    ) as Effect.Effect<A, E, R>,
+  // Only BEGIN/COMMIT can fail with a DatabaseError here: queries inside already die on errors.
+  transaction: (effect) =>
+    database.transaction(effect).pipe(Effect.catchTag('DatabaseError', Effect.die)),
 });
 
 export const notFound = (message = 'Not found.') => new NotFound({ message });

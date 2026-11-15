@@ -1,7 +1,7 @@
 import { describe, expect, it } from '@effect/vitest';
 import { providerApp, type Db } from '@posthub/db';
 import { createTestDb } from '@posthub/db/testing';
-import { Deferred, Effect, Fiber, Schema } from 'effect';
+import { Cause, Effect, Exit, Schema } from 'effect';
 import { makeDatabase } from './services';
 
 class Oops extends Schema.TaggedError<Oops>()('Oops', {}) {}
@@ -77,35 +77,25 @@ describe('Database', () => {
     }),
   );
 
-  it.effect("keeps other fibers' statements out of an open transaction", () =>
+  it.effect('rolls back and fails loudly when a transaction waits', () =>
     Effect.gen(function* () {
       const db = createTestDb();
       const database = makeDatabase(db);
-      const inside = yield* Deferred.make<void>();
-      const release = yield* Deferred.make<void>();
-
-      // A transaction that writes, waits (e.g. on the network), then fails and rolls back.
-      const transaction = yield* database
+      const exit = yield* database
         .transaction(
-          Effect.gen(function* () {
-            yield* database.use((d) => insert(d, 'rolled-back'));
-            yield* Deferred.succeed(inside, undefined);
-            yield* Deferred.await(release);
-            return yield* new Oops();
-          }),
+          Effect.andThen(
+            database.use((d) => insert(d, 'rolled-back')),
+            Effect.sleep('1 second'),
+          ),
         )
-        .pipe(Effect.flip, Effect.forkChild);
-      yield* Deferred.await(inside);
-
-      // Meanwhile another fiber writes. It must wait, not join the transaction: give it every
-      // chance to run before the transaction ends.
-      const other = yield* database.use((d) => insert(d, 'kept')).pipe(Effect.forkChild);
-      for (let i = 0; i < 10; i++) yield* Effect.yieldNow;
-      yield* Deferred.succeed(release, undefined);
-      yield* Fiber.join(transaction);
-      yield* Fiber.join(other);
-
-      expect(providers(db)).toEqual(['kept']);
+        .pipe(Effect.exit);
+      expect(Exit.isFailure(exit) && Cause.pretty(exit.cause)).toMatch(
+        /waited for something asynchronous/,
+      );
+      // Nothing stays open or half-written: other code can write normally.
+      expect(providers(db)).toEqual([]);
+      yield* database.use((d) => insert(d, 'after'));
+      expect(providers(db)).toEqual(['after']);
     }),
   );
 });

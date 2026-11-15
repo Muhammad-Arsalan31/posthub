@@ -35,6 +35,7 @@ import {
   Fiber,
   FiberSet,
   Layer,
+  Option,
   Schedule,
   type Scope,
 } from 'effect';
@@ -340,14 +341,28 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
     yield* database.use((db) => startDuePosts(db, at));
     const started: Array<Fiber.Fiber<void>> = [];
     while ((yield* FiberSet.size(jobs)) < concurrency) {
-      const target = yield* database.transaction(database.use((db) => claimNext(db, at)));
-      if (!target) break;
-      // If even recording the outcome fails (the database itself), the target stays
-      // `publishing`, so the next start marks it failed for the owner to check.
-      const job = publishTarget(target).pipe(
-        Effect.catchCause((cause) => Effect.logError(`[publisher] ${target.id}`, cause)),
+      // Claiming and starting are one step: a shutdown in between would leave a target marked
+      // `publishing` that was never attempted, and the next start would report it as interrupted.
+      const fiber = yield* Effect.uninterruptible(
+        Effect.flatMap(database.transaction(database.use((db) => claimNext(db, at))), (target) =>
+          target
+            ? Effect.asSome(
+                FiberSet.run(
+                  jobs,
+                  // If even recording the outcome fails (the database itself), the target stays
+                  // `publishing`, so the next start marks it failed for the owner to check.
+                  publishTarget(target).pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logError(`[publisher] ${target.id}`, cause),
+                    ),
+                  ),
+                ),
+              )
+            : Effect.succeedNone,
+        ),
       );
-      started.push(yield* FiberSet.run(jobs, job));
+      if (Option.isNone(fiber)) break;
+      started.push(fiber.value);
     }
     return started;
   });
