@@ -17,6 +17,7 @@
     "@posthub/db": "workspace:*",
     "@posthub/integrations": "workspace:*",
     "better-sqlite3": "catalog:",
+    "effect": "catalog:",
     "hono": "catalog:"
   },
   "devDependencies": {

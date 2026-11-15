@@ -14,9 +14,9 @@ export const providerAppsRouter = {
         clientSecret: z.string().trim().max(500).optional(),
       }),
     )
-    .handler(({ context, input }) => {
+    .handler(async ({ context, input }) => {
       try {
-        context.providerApps.save(input.provider, input);
+        await context.run(context.providerApps.save(input.provider, input));
       } catch (error) {
         if (error instanceof ProviderAppError) {
           throw new ORPCError('BAD_REQUEST', { message: error.message });
@@ -26,8 +26,8 @@ export const providerAppsRouter = {
       return { provider: input.provider };
     }),
 
-  remove: protectedProcedure.input(z.object({ provider })).handler(({ context, input }) => {
-    context.providerApps.remove(input.provider);
+  remove: protectedProcedure.input(z.object({ provider })).handler(async ({ context, input }) => {
+    await context.run(context.providerApps.remove(input.provider));
     return { provider: input.provider };
   }),
 };

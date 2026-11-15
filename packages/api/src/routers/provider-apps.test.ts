@@ -4,6 +4,7 @@ import { createTestDb, seedUser } from '@posthub/db/testing';
 import { describe, expect, it } from 'vite-plus/test';
 import { router } from '../index';
 import { sessionFor, testContext } from '../testing';
+import { Effect } from 'effect';
 
 function setup(env: Parameters<typeof testContext>[2] = {}) {
   const db = createTestDb();
@@ -35,7 +36,7 @@ describe('provider apps', () => {
 
     const [row] = db.select().from(providerApp).all();
     expect(row!.config).not.toContain('li-secret');
-    expect(ctx.vault.decrypt(row!.config)).toEqual({
+    expect(Effect.runSync(ctx.vault.decrypt(row!.config))).toEqual({
       clientId: 'li-id',
       clientSecret: 'li-secret',
     });
@@ -49,7 +50,7 @@ describe('provider apps', () => {
       { context: ctx },
     );
     const restarted = testContext(db, null);
-    expect(restarted.providerApps.describe('meta')).toEqual({
+    expect(await restarted.run(restarted.providerApps.describe('meta'))).toEqual({
       source: 'database',
       clientId: 'app',
     });
@@ -84,7 +85,10 @@ describe('provider apps', () => {
     await save({ clientId: 'id-2', clientSecret: '' });
 
     const [row] = db.select().from(providerApp).all();
-    expect(ctx.vault.decrypt(row!.config)).toEqual({ clientId: 'id-2', clientSecret: 'secret-1' });
+    expect(Effect.runSync(ctx.vault.decrypt(row!.config))).toEqual({
+      clientId: 'id-2',
+      clientSecret: 'secret-1',
+    });
   });
 
   it('never returns secrets to the client', async () => {

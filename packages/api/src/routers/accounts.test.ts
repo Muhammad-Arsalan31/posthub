@@ -7,6 +7,7 @@ import { beginOAuth, completeOAuth } from '../connections';
 import { router } from '../index';
 import type { Context } from '../procedures';
 import { sessionFor, testContext } from '../testing';
+import { Effect } from 'effect';
 
 const google = { google: { clientId: 'gid', clientSecret: 'gs' } };
 const googleFetch = () =>
@@ -33,66 +34,76 @@ describe('OAuth connect flow', () => {
     ctx = testContext(db, sessionFor(owner), { config: google, deps: googleFetch() });
   });
 
-  const start = () =>
+  const start = async () =>
     new URL(
-      beginOAuth({ ...ctx, userId, providerId: 'google', redirectUri: 'http://cb' }),
+      await ctx.run(beginOAuth({ ...ctx, userId, providerId: 'google', redirectUri: 'http://cb' })),
     ).searchParams.get('state')!;
 
   it('stores connected accounts with encrypted credentials', async () => {
-    const state = start();
-    await completeOAuth({
-      ...ctx,
-      userId,
-      providerId: 'google',
-      state,
-      code: 'c',
-      redirectUri: 'http://cb',
-    });
-
-    const [row] = db.select().from(socialAccount).all();
-    expect(row).toMatchObject({ platform: 'youtube', externalId: 'UC1', displayName: 'Chan' });
-    expect(row!.credentials).not.toContain('rt');
-    expect(ctx.vault.decrypt(row!.credentials!)).toMatchObject({ refreshToken: 'rt' });
-    expect(db.select().from(oauthState).all()).toHaveLength(0);
-  });
-
-  it('rejects reused, foreign or mismatched state', async () => {
-    const state = start();
-    const finish = (overrides: Partial<Parameters<typeof completeOAuth>[0]>) =>
+    const state = await start();
+    await ctx.run(
       completeOAuth({
         ...ctx,
         userId,
         providerId: 'google',
         state,
         code: 'c',
-        redirectUri: 'x',
-        ...overrides,
-      });
+        redirectUri: 'http://cb',
+      }),
+    );
+
+    const [row] = db.select().from(socialAccount).all();
+    expect(row).toMatchObject({ platform: 'youtube', externalId: 'UC1', displayName: 'Chan' });
+    expect(row!.credentials).not.toContain('rt');
+    expect(Effect.runSync(ctx.vault.decrypt(row!.credentials!))).toMatchObject({
+      refreshToken: 'rt',
+    });
+    expect(db.select().from(oauthState).all()).toHaveLength(0);
+  });
+
+  it('rejects reused, foreign or mismatched state', async () => {
+    const state = await start();
+    const finish = (overrides: Partial<Parameters<typeof completeOAuth>[0]>) =>
+      ctx.run(
+        completeOAuth({
+          ...ctx,
+          userId,
+          providerId: 'google',
+          state,
+          code: 'c',
+          redirectUri: 'x',
+          ...overrides,
+        }),
+      );
 
     await expect(finish({ providerId: 'meta' })).rejects.toThrow(/invalid or expired/);
     // The failed attempt consumed the state, so even the right provider is now refused.
     await expect(finish({})).rejects.toThrow(/invalid or expired/);
-    await expect(finish({ state: start(), userId: 'someone-else' })).rejects.toThrow(/invalid/);
+    await expect(finish({ state: await start(), userId: 'someone-else' })).rejects.toThrow(
+      /invalid/,
+    );
   });
 
   it('updates the existing row when the same channel reconnects', async () => {
     for (let i = 0; i < 2; i++) {
-      await completeOAuth({
-        ...ctx,
-        userId,
-        providerId: 'google',
-        state: start(),
-        code: 'c',
-        redirectUri: 'x',
-      });
+      await ctx.run(
+        completeOAuth({
+          ...ctx,
+          userId,
+          providerId: 'google',
+          state: await start(),
+          code: 'c',
+          redirectUri: 'x',
+        }),
+      );
     }
     expect(db.select().from(socialAccount).all()).toHaveLength(1);
   });
 
-  it('refuses providers the server has no credentials for', () => {
-    expect(() => beginOAuth({ ...ctx, userId, providerId: 'linkedin', redirectUri: 'x' })).toThrow(
-      /not configured/,
-    );
+  it('refuses providers the server has no credentials for', async () => {
+    await expect(
+      ctx.run(beginOAuth({ ...ctx, userId, providerId: 'linkedin', redirectUri: 'x' })),
+    ).rejects.toThrow(/not configured/);
   });
 });
 
@@ -101,15 +112,19 @@ describe('accounts router', () => {
     const db = createTestDb();
     const owner = seedUser(db);
     const ctx = testContext(db, sessionFor(owner), { config: google, deps: googleFetch() });
-    const url = beginOAuth({ ...ctx, userId: owner.id, providerId: 'google', redirectUri: 'x' });
-    await completeOAuth({
-      ...ctx,
-      userId: owner.id,
-      providerId: 'google',
-      state: new URL(url).searchParams.get('state')!,
-      code: 'c',
-      redirectUri: 'x',
-    });
+    const url = await ctx.run(
+      beginOAuth({ ...ctx, userId: owner.id, providerId: 'google', redirectUri: 'x' }),
+    );
+    await ctx.run(
+      completeOAuth({
+        ...ctx,
+        userId: owner.id,
+        providerId: 'google',
+        state: new URL(url).searchParams.get('state')!,
+        code: 'c',
+        redirectUri: 'x',
+      }),
+    );
 
     const accounts = await call(router.accounts.list, undefined, { context: ctx });
     expect(accounts).toHaveLength(1);

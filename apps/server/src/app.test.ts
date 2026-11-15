@@ -1,14 +1,14 @@
 import { createORPCClient } from '@orpc/client';
 import { RPCLink } from '@orpc/client/fetch';
 import type { RouterClient } from '@orpc/server';
-import { createIntegrationsManager, type AppRouter } from '@posthub/api';
+import { apiLayer, type AppRouter } from '@posthub/api';
 import { createAuth } from '@posthub/auth';
 import { createTestDb } from '@posthub/db/testing';
-import { createVault } from '@posthub/integrations';
 import { createFakeFetch } from '@posthub/integrations/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Effect, Layer } from 'effect';
 import { describe, expect, it } from 'vite-plus/test';
 import { createApp } from './app';
 
@@ -27,24 +27,21 @@ function setup() {
       () => ({ items: [{ id: 'UC1', snippet: { title: 'My Channel' } }] }),
     ],
   ]);
-  const vault = createVault('test-encryption-key-test-encryption-key');
   // Google comes from "env"; other providers can be added at runtime through the API.
-  const providerApps = createIntegrationsManager({
-    db,
-    vault,
-    envConfig: { google: { clientId: 'gid', clientSecret: 'gsecret' } },
-    deps: { fetch: google.fetch },
-  });
-  const mediaDir = mkdtempSync(join(tmpdir(), 'posthub-server-media-'));
-  const app = createApp({
-    db,
-    auth,
-    providerApps,
-    vault,
-    mediaDir,
-    publicUrl: baseURL,
-    log: false,
-  });
+  const services = Effect.runSync(
+    Effect.scoped(
+      Layer.build(
+        apiLayer({
+          db,
+          encryptionKey: 'test-encryption-key-test-encryption-key',
+          mediaDir: mkdtempSync(join(tmpdir(), 'posthub-server-media-')),
+          envConfig: { google: { clientId: 'gid', clientSecret: 'gsecret' } },
+          integrationDeps: { fetch: google.fetch },
+        }),
+      ),
+    ),
+  );
+  const app = createApp({ auth, services, publicUrl: baseURL, log: false });
 
   const rpc = (cookie?: string): RouterClient<AppRouter> =>
     createORPCClient(

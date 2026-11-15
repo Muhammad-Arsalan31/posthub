@@ -9,7 +9,7 @@ export {
   isHtmlBody,
   textToHtml,
 } from './content';
-export { createVault, type Vault } from './vault';
+export { createVault, Vault, VaultError, type VaultService } from './vault';
 export { refreshIfExpiring } from './refresh';
 export {
   createIntegrations,

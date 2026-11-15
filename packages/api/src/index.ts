@@ -7,12 +7,22 @@ import { providerAppsRouter } from './routers/provider-apps';
 
 export type { Context } from './procedures';
 export { beginOAuth, completeOAuth, ConnectionError, saveAccounts } from './connections';
-export { createPublisher, INTERRUPTED_MESSAGE, RETRY_DELAYS_MS, type Publisher } from './publisher';
+export { apiLayer, rpcContext, type ApiLayerOptions, type ApiServices } from './layer';
 export {
-  createIntegrationsManager,
+  INTERRUPTED_MESSAGE,
+  Publisher,
+  publisherWorker,
+  RETRY_DELAYS_MS,
+  type PublisherOptions,
+} from './publisher';
+export {
+  makeProviderApps,
+  ProviderAppError,
+  ProviderApps,
   type AppSource,
-  type IntegrationsManager,
+  type ProviderAppsService,
 } from './provider-apps';
+export { Database, MediaDir } from './services';
 
 export const router = {
   health: publicProcedure.handler(() => ({ ok: true, time: new Date() })),

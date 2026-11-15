@@ -9,25 +9,22 @@ import {
   beginOAuth,
   completeOAuth,
   ConnectionError,
+  rpcContext,
   router,
-  type IntegrationsManager,
+  type ApiServices,
 } from '@posthub/api';
 import type { Auth } from '@posthub/auth';
-import type { Db } from '@posthub/db';
-import { PlatformError, type Vault } from '@posthub/integrations';
+import { PlatformError } from '@posthub/integrations';
+import type { Context } from 'effect';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { version } from '../../../package.json';
 import { env } from './env';
 
 export interface AppDeps {
-  db: Db;
   auth: Auth;
-  /** Live connector config; app credentials saved in the UI apply without a restart. */
-  providerApps: IntegrationsManager;
-  vault: Vault;
-  /** Folder holding uploaded media. */
-  mediaDir?: string;
+  /** The API's services (database, vault, live connector config, media folder), built once at startup. */
+  services: Context.Context<ApiServices>;
   /** Origin the browser uses; OAuth redirect URIs are built from it. */
   publicUrl?: string;
   log?: boolean;
@@ -39,16 +36,11 @@ const userMessage = (error: unknown) =>
     ? error.message
     : 'Something went wrong while connecting. Check the server logs.';
 
-export function createApp({
-  db,
-  auth,
-  providerApps,
-  vault,
-  mediaDir = env.mediaDir,
-  publicUrl = env.publicUrl,
-  log = true,
-}: AppDeps) {
+export function createApp({ auth, services, publicUrl = env.publicUrl, log = true }: AppDeps) {
   const app = new Hono();
+  // A request's context: the session plus every API service (and `run` for Effect code).
+  const contextFor = (session: Awaited<ReturnType<typeof getSession>>) =>
+    rpcContext(services, session);
   if (log) app.use(logger());
 
   const getSession = (headers: Headers) => auth.api.getSession({ headers });
@@ -67,14 +59,16 @@ export function createApp({
     if (!session) return c.redirect(`${publicUrl}/login`);
     const provider = c.req.param('provider');
     try {
+      const ctx = contextFor(session);
       return c.redirect(
-        beginOAuth({
-          db,
-          integrations: providerApps.current,
-          userId: session.user.id,
-          providerId: provider,
-          redirectUri: redirectUri(provider),
-        }),
+        await ctx.run(
+          beginOAuth({
+            integrations: ctx.integrations,
+            userId: session.user.id,
+            providerId: provider,
+            redirectUri: redirectUri(provider),
+          }),
+        ),
       );
     } catch (error) {
       return c.redirect(accountsPage({ error: userMessage(error) }));
@@ -92,16 +86,17 @@ export function createApp({
       );
     }
     try {
-      const accounts = await completeOAuth({
-        db,
-        integrations: providerApps.current,
-        vault,
-        userId: session.user.id,
-        providerId: provider,
-        state,
-        code,
-        redirectUri: redirectUri(provider),
-      });
+      const ctx = contextFor(session);
+      const accounts = await ctx.run(
+        completeOAuth({
+          integrations: ctx.integrations,
+          userId: session.user.id,
+          providerId: provider,
+          state,
+          code,
+          redirectUri: redirectUri(provider),
+        }),
+      );
       return c.redirect(accountsPage({ connected: String(accounts.length) }));
     } catch (err) {
       // Expired or forged state is routine; platform errors are logged to help debug app setup.
@@ -116,6 +111,7 @@ export function createApp({
   app.get('/files/:id', async (c) => {
     const session = await getSession(c.req.raw.headers);
     if (!session) return c.body(null, 401);
+    const { db, mediaDir } = contextFor(session);
     const asset = await db.query.mediaAsset.findFirst({
       where: (m, { and, eq }) => and(eq(m.id, c.req.param('id')), eq(m.userId, session.user.id)),
     });
@@ -160,7 +156,7 @@ export function createApp({
     const session = await getSession(c.req.raw.headers);
     const { matched, response } = await rpcHandler.handle(c.req.raw, {
       prefix: '/rpc',
-      context: { db, session, integrations: providerApps.current, providerApps, vault, mediaDir },
+      context: contextFor(session),
     });
     if (matched) return c.newResponse(response.body, response);
     await next();

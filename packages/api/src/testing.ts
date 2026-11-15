@@ -3,9 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AuthSession } from '@posthub/auth';
 import type { Db } from '@posthub/db';
-import { createVault, type IntegrationDeps, type IntegrationsConfig } from '@posthub/integrations';
+import type { IntegrationDeps, IntegrationsConfig } from '@posthub/integrations';
+import { Effect, Layer } from 'effect';
+import { apiLayer, rpcContext } from './layer';
 import type { Context } from './procedures';
-import { createIntegrationsManager } from './provider-apps';
 
 export const TEST_ENCRYPTION_KEY = 'test-encryption-key-test-encryption-key';
 
@@ -34,22 +35,18 @@ export function testContext(
   integrations: { config?: IntegrationsConfig; deps?: IntegrationDeps } = {},
   mediaDir = mkdtempSync(join(tmpdir(), 'posthub-media-')),
 ): Context {
-  const vault = createVault(TEST_ENCRYPTION_KEY);
-  const providerApps = createIntegrationsManager({
-    db,
-    vault,
-    envConfig: integrations.config,
-    deps: integrations.deps,
-  });
-  return {
-    db,
-    session,
-    vault,
-    mediaDir,
-    providerApps,
-    // A getter, so saving credentials mid-test is visible like a fresh request would see it.
-    get integrations() {
-      return providerApps.current;
-    },
-  };
+  const services = Effect.runSync(
+    Effect.scoped(
+      Layer.build(
+        apiLayer({
+          db,
+          encryptionKey: TEST_ENCRYPTION_KEY,
+          mediaDir,
+          envConfig: integrations.config,
+          integrationDeps: integrations.deps,
+        }),
+      ),
+    ),
+  );
+  return rpcContext(services, session);
 }

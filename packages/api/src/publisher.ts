@@ -1,4 +1,3 @@
-import { Effect } from 'effect';
 // The publishing worker. Jobs live in SQLite (`post_target` rows), so nothing is lost on restart:
 //   1. A scheduled post that is due moves to `publishing`.
 //   2. Each of its `pending` targets is claimed (status `publishing`, attempts + 1), published through
@@ -23,12 +22,25 @@ import {
   platformError,
   PROVIDERS,
   refreshIfExpiring,
-  type Integrations,
+  Vault,
   type MediaFile,
-  type Vault,
 } from '@posthub/integrations';
 import { and, asc, eq, isNull, lte, or } from 'drizzle-orm';
+import {
+  Cause,
+  Clock,
+  Context,
+  Duration,
+  Effect,
+  Fiber,
+  FiberSet,
+  Layer,
+  Schedule,
+  type Scope,
+} from 'effect';
 import { inlineMediaIds, inlineRef } from './inline-media';
+import { ProviderApps } from './provider-apps';
+import { Database, MediaDir } from './services';
 
 /** Waits before retry 1, 2 and 3 of a retryable failure (429, 5xx, still processing). */
 export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
@@ -59,33 +71,33 @@ export function refreshPostStatus(db: Executor, postId: string) {
 }
 
 export interface PublisherOptions {
-  db: Db;
-  vault: Vault;
-  /** Current connectors; read per job so app credentials saved in the UI apply right away. */
-  integrations: () => Integrations;
-  mediaDir: string;
   /** Targets published at the same time. */
   concurrency?: number;
-  now?: () => Date;
-  log?: Pick<Console, 'error' | 'info'>;
+}
+
+export interface PublisherService {
+  /** Marks targets left `publishing` by a crash or shutdown as failed. Succeeds with how many. */
+  readonly recover: Effect.Effect<number>;
+  /** Starts due posts and claims targets up to the concurrency limit, without waiting for them. */
+  readonly startJobs: Effect.Effect<void>;
+  /** Like `startJobs`, but waits until the jobs it started have finished. */
+  readonly tick: Effect.Effect<void>;
 }
 
 type ClaimedTarget = typeof postTarget.$inferSelect;
+type Phase = 'prepare' | 'refresh' | 'publish';
 
-export function createPublisher({
-  db,
-  vault,
-  integrations,
-  mediaDir,
-  concurrency = 2,
-  now = () => new Date(),
-  log = console,
-}: PublisherOptions) {
-  const inFlight = new Set<Promise<void>>();
-  let timer: ReturnType<typeof setInterval> | undefined;
+const now = Effect.map(Clock.currentTimeMillis, (ms) => new Date(ms));
 
-  /** Marks targets left `publishing` by a crash or shutdown as failed. Returns how many. */
-  function recover() {
+export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: PublisherOptions) {
+  const db = yield* Database;
+  const vault = yield* Vault;
+  const providerApps = yield* ProviderApps;
+  const mediaDir = yield* MediaDir;
+  // Jobs run in this set; closing the publisher's scope waits for them (they are uninterruptible).
+  const jobs = yield* FiberSet.make<void>();
+
+  const recover = Effect.sync(() => {
     const stuck = db
       .select({ id: postTarget.id, postId: postTarget.postId })
       .from(postTarget)
@@ -102,7 +114,7 @@ export function createPublisher({
       for (const postId of new Set(stuck.map((t) => t.postId))) refreshPostStatus(tx, postId);
     });
     return stuck.length;
-  }
+  });
 
   function startDuePosts(at: Date) {
     const due = db
@@ -173,43 +185,48 @@ export function createPublisher({
       .map(({ storagePath, ...file }) => ({ ...file, path: join(mediaDir, storagePath) }));
   }
 
-  function finish(target: ClaimedTarget, changes: Partial<typeof postTarget.$inferInsert>) {
-    db.transaction((tx) => {
-      tx.update(postTarget)
-        .set({ lockedAt: null, ...changes })
-        .where(eq(postTarget.id, target.id))
-        .run();
-      refreshPostStatus(tx, target.postId);
-    });
-  }
+  const finish = (target: ClaimedTarget, changes: Partial<typeof postTarget.$inferInsert>) =>
+    Effect.sync(() =>
+      db.transaction((tx) => {
+        tx.update(postTarget)
+          .set({ lockedAt: null, ...changes })
+          .where(eq(postTarget.id, target.id))
+          .run();
+        refreshPostStatus(tx, target.postId);
+      }),
+    );
 
-  async function publishTarget(target: ClaimedTarget) {
-    let phase: 'prepare' | 'refresh' | 'publish' = 'prepare';
+  const publishTarget = (target: ClaimedTarget) => {
+    let phase: Phase = 'prepare';
     let platform = 'platform';
-    try {
+
+    const attempt = Effect.gen(function* () {
       const account = db
         .select()
         .from(socialAccount)
         .where(eq(socialAccount.id, target.socialAccountId))
         .get();
       const content = db.select().from(post).where(eq(post.id, target.postId)).get();
-      if (!account || !content)
-        return finish(target, {
+      if (!account || !content) {
+        return yield* finish(target, {
           status: 'failed',
           lastError: 'The post or account no longer exists.',
         });
+      }
       platform = account.platform;
 
       if (account.status !== 'active' || !account.credentials) {
-        throw platformError(platform, 'Reconnect this account on the Accounts page, then retry.', {
-          retryable: false,
-        });
+        return yield* platformError(
+          platform,
+          'Reconnect this account on the Accounts page, then retry.',
+          { retryable: false },
+        );
       }
-      const adapter = integrations().adapter(account.platform);
+      const adapter = (yield* providerApps.current).adapter(account.platform);
       if (!adapter) {
         const label =
           PROVIDERS.find((p) => p.platforms.includes(account.platform))?.label ?? platform;
-        throw platformError(
+        return yield* platformError(
           platform,
           `${label} is not set up. Add its app credentials on the Accounts page, then retry.`,
           { retryable: false },
@@ -217,10 +234,8 @@ export function createPublisher({
       }
 
       phase = 'refresh';
-      let credentials = vault.decrypt(account.credentials);
-      const refreshed = await Effect.runPromise(
-        refreshIfExpiring(adapter, credentials, account.tokenExpiresAt, now().getTime()),
-      );
+      let credentials = yield* vault.decrypt(account.credentials);
+      const refreshed = yield* refreshIfExpiring(adapter, credentials, account.tokenExpiresAt);
       if (refreshed) {
         credentials = refreshed.credentials;
         db.update(socialAccount)
@@ -234,52 +249,59 @@ export function createPublisher({
 
       phase = 'publish';
       const body = bodyFormats(content.body);
-      const result = await Effect.runPromise(
-        adapter.publish(credentials, {
-          title: content.title,
-          text: target.captionOverride ?? body.text,
-          html: body.html,
-          link: content.link ?? undefined,
-          media: loadMedia(content.id),
-          featuredImage: mediaFile(content.featuredMediaId, content.userId),
-          thumbnail: mediaFile(content.thumbnailMediaId, content.userId),
-          inlineImages: inlineMediaIds(content.body).flatMap((mediaId) => {
-            const file = mediaFile(mediaId, content.userId);
-            return file ? [{ ref: inlineRef(mediaId), file }] : [];
-          }),
-          wordpress: content.wordpressOptions
-            ? {
-                tags: content.wordpressOptions.tags,
-                categoryIds: content.wordpressOptions.categories[account.id] ?? [],
-              }
-            : undefined,
+      const result = yield* adapter.publish(credentials, {
+        title: content.title,
+        text: target.captionOverride ?? body.text,
+        html: body.html,
+        link: content.link ?? undefined,
+        media: loadMedia(content.id),
+        featuredImage: mediaFile(content.featuredMediaId, content.userId),
+        thumbnail: mediaFile(content.thumbnailMediaId, content.userId),
+        inlineImages: inlineMediaIds(content.body).flatMap((mediaId) => {
+          const file = mediaFile(mediaId, content.userId);
+          return file ? [{ ref: inlineRef(mediaId), file }] : [];
         }),
-      );
-      finish(target, {
+        wordpress: content.wordpressOptions
+          ? {
+              tags: content.wordpressOptions.tags,
+              categoryIds: content.wordpressOptions.categories[account.id] ?? [],
+            }
+          : undefined,
+      });
+      yield* finish(target, {
         status: 'published',
         externalPostId: result.externalId,
         externalUrl: result.url ?? null,
-        publishedAt: now(),
+        publishedAt: yield* now,
         // Kept on published targets so the owner sees partial problems (e.g. no thumbnail).
         lastError: result.warning ?? null,
         nextAttemptAt: null,
       });
-      log.info(`[publisher] published ${target.id} to ${platform}`);
-    } catch (error) {
-      recordFailure(target, error, phase, platform);
-    }
-  }
+      yield* Effect.logInfo(`[publisher] published ${target.id} to ${platform}`);
+    });
 
-  function recordFailure(target: ClaimedTarget, error: unknown, phase: string, platform: string) {
+    return attempt.pipe(
+      Effect.catchCause((cause) => recordFailure(target, cause, phase, platform)),
+      // Never cut short: a half-finished upload must be recorded, not abandoned.
+      Effect.uninterruptible,
+    );
+  };
+
+  const recordFailure = Effect.fnUntraced(function* (
+    target: ClaimedTarget,
+    cause: Cause.Cause<unknown>,
+    phase: Phase,
+    platform: string,
+  ) {
+    const error = Cause.squash(cause);
     if (error instanceof PlatformError) {
       const delay = RETRY_DELAYS_MS[target.attempts - 1];
       if (error.retryable && delay !== undefined) {
-        finish(target, {
+        return yield* finish(target, {
           status: 'pending',
           lastError: error.message,
-          nextAttemptAt: new Date(now().getTime() + delay),
+          nextAttemptAt: new Date((yield* Clock.currentTimeMillis) + delay),
         });
-        return;
       }
       if (phase === 'refresh' && !error.retryable) {
         // The platform rejected the refresh token: the owner has to reconnect.
@@ -288,13 +310,13 @@ export function createPublisher({
           .where(eq(socialAccount.id, target.socialAccountId))
           .run();
       }
-      finish(target, { status: 'failed', lastError: error.message });
-      return;
+      return yield* finish(target, { status: 'failed', lastError: error.message });
     }
 
-    log.error(`[publisher] ${target.id} (${platform})`, error);
+    // Anything else (a network failure, a bug): the outcome is unknown, so never retry it.
+    yield* Effect.logError(`[publisher] ${target.id} (${platform})`, cause);
     const message = error instanceof Error ? error.message : String(error);
-    finish(target, {
+    yield* finish(target, {
       status: 'failed',
       // A network failure mid-publish is ambiguous: the platform may have received the post.
       lastError:
@@ -302,42 +324,51 @@ export function createPublisher({
           ? `${message}. PostHub could not confirm whether this was posted; check ${platform} before retrying.`
           : message,
     });
-  }
+  });
 
-  /** Starts due posts and claims targets up to `concurrency`. Resolves when those jobs finish. */
-  function tick() {
-    const at = now();
+  /** Claims due targets into the job set and returns their fibers. */
+  const claimJobs = Effect.gen(function* () {
+    const at = yield* now;
     startDuePosts(at);
-    const started: Promise<void>[] = [];
-    while (inFlight.size < concurrency) {
+    const started: Array<Fiber.Fiber<void>> = [];
+    while ((yield* FiberSet.size(jobs)) < concurrency) {
       const target = claimNext(at);
       if (!target) break;
-      const job = publishTarget(target).finally(() => inFlight.delete(job));
-      inFlight.add(job);
-      started.push(job);
+      started.push(yield* FiberSet.run(jobs, publishTarget(target)));
     }
-    return Promise.all(started).then(() => undefined);
-  }
+    return started;
+  });
 
-  return {
+  return Publisher.of({
     recover,
-    tick,
-    /** Recovers interrupted work, then checks for due posts every `intervalMs`. */
-    start(intervalMs = 5000) {
-      const interrupted = recover();
-      if (interrupted) log.info(`[publisher] marked ${interrupted} interrupted target(s) failed`);
-      const run = () => {
-        tick().catch((error: unknown) => log.error('[publisher]', error));
-      };
-      run();
-      timer = setInterval(run, intervalMs);
-    },
-    /** Stops polling and waits for jobs in progress. */
-    async stop() {
-      clearInterval(timer);
-      await Promise.all(inFlight);
-    },
-  };
+    startJobs: Effect.asVoid(claimJobs),
+    tick: Effect.flatMap(claimJobs, (started) => Fiber.awaitAll(started)).pipe(Effect.asVoid),
+  });
+});
+
+export class Publisher extends Context.Service<Publisher, PublisherService>()(
+  '@posthub/api/Publisher',
+) {
+  static readonly layer = (options: PublisherOptions = {}) =>
+    Layer.effect(Publisher, makePublisher(options));
 }
 
-export type Publisher = ReturnType<typeof createPublisher>;
+/**
+ * Runs the publisher in the background: recovers interrupted work, then checks for due posts
+ * every `interval`. Closing the layer's scope stops polling and waits for jobs in progress.
+ */
+export const publisherWorker = (interval: Duration.Input = '5 seconds') =>
+  Layer.effectDiscard(
+    Effect.gen(function* () {
+      const publisher = yield* Publisher;
+      const interrupted = yield* publisher.recover;
+      if (interrupted) {
+        yield* Effect.logInfo(`[publisher] marked ${interrupted} interrupted target(s) failed`);
+      }
+      yield* publisher.startJobs.pipe(
+        Effect.catchCause((cause) => Effect.logError('[publisher]', cause)),
+        Effect.repeat(Schedule.spaced(interval)),
+        Effect.forkScoped,
+      );
+    }) satisfies Effect.Effect<void, never, Publisher | Scope.Scope>,
+  );

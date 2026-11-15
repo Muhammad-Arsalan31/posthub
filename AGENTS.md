@@ -27,13 +27,15 @@ apps/web/            React PWA
   src/test/          test setup + renderRoute() helper
 apps/server/         Hono server
   src/env.ts         all config/env in one place (paths, port, secret)
-  src/app.ts         createApp({ db, auth, integrations, vault }): routes, used by index.ts and tests
+  src/index.ts       one ManagedRuntime (apiLayer + Publisher + publisherWorker); dispose() on shutdown
+  src/app.ts         createApp({ auth, services }): routes, used by index.ts and tests
 packages/db/         Drizzle schema (src/schema), migrations (drizzle/), createDb, runMigrations
   src/testing.ts     createTestDb(), seedUser() for tests (@posthub/db/testing)
 packages/auth/       createAuth(): better-auth config
 packages/api/        oRPC router (src/index.ts), procedures (src/procedures.ts), routers/
-  src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows)
-  src/publisher.ts   background publishing worker (started by apps/server/src/index.ts)
+  src/services.ts    Database, MediaDir services; layer.ts has apiLayer() (adds Vault, ProviderApps) and rpcContext()
+  src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows, as Effects)
+  src/publisher.ts   Publisher service + publisherWorker layer (background publishing, run by the server)
   src/post-rules.ts  what each platform can publish; checked before a post is scheduled
   src/testing.ts     testContext(), sessionFor() for procedure tests (@posthub/api/testing)
 packages/integrations/  platform connectors: no DB access, injectable fetch
@@ -83,6 +85,8 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 ### API (oRPC)
 
 - Add procedures in `packages/api/src/routers/<area>.ts` and mount them in `router` in `src/index.ts`.
+- Backend logic is Effect code over the services in `apiLayer` (`Database`, `Vault`, `MediaDir`, `ProviderApps`).
+  oRPC handlers run it with `await context.run(effect)`; it rejects with the Effect's typed error.
 - Use `protectedProcedure` for anything user-scoped; it provides `context.user` and a non-null
   `context.session`. **Always filter by `context.user.id`** (owner scoping is tested).
 - Validate input with zod (v4). Throw `ORPCError('NOT_FOUND' | 'UNAUTHORIZED' | ...)` for expected errors.
@@ -126,7 +130,7 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   headers turned off). Use `Clock`/`Effect.sleep` rather than `Date.now()`/timers so tests can use `TestClock`.
 - Credentials are encrypted with the vault before storage, and `accounts.list` never selects them.
 - **Developer-app credentials** (client id/secret per OAuth provider) are entered on the Accounts page and stored
-  vault-encrypted in `provider_app`. `createIntegrationsManager` (`packages/api/src/provider-apps.ts`) merges them
+  vault-encrypted in `provider_app`. the `ProviderApps` service (`packages/api/src/provider-apps.ts`) merges them
   over env values (`apps/server/src/env.ts`, DB wins field by field) and rebuilds the connectors on save, with no restart.
   Read `context.integrations` (a per-request snapshot) to use connectors, and `context.providerApps` to change app credentials.
   Secrets are never returned to the client.

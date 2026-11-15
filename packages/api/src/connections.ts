@@ -1,80 +1,99 @@
-import { Effect } from 'effect';
-// Platform connect flows, shared by the Hono OAuth routes and the oRPC accounts router.
+// Platform connect flows, shared by the OAuth routes and the accounts router.
 import { randomBytes, randomUUID } from 'node:crypto';
-import { oauthState, socialAccount, type Db } from '@posthub/db';
-import type { ConnectedAccount, Integrations, Vault } from '@posthub/integrations';
+import { oauthState, socialAccount } from '@posthub/db';
+import { Vault, type ConnectedAccount, type Integrations } from '@posthub/integrations';
 import { eq, lt } from 'drizzle-orm';
+import { Clock, Effect, Schema } from 'effect';
+import { Database } from './services';
 
 const STATE_TTL_MS = 10 * 60_000;
 
 /** A user-facing connection problem: shown on the Accounts page. */
-export class ConnectionError extends Error {
-  override name = 'ConnectionError';
-}
+export class ConnectionError extends Schema.TaggedError<ConnectionError>()('ConnectionError', {
+  message: Schema.String,
+}) {}
 
-interface Deps {
-  db: Db;
-  integrations: Integrations;
-}
+const now = Effect.map(Clock.currentTimeMillis, (ms) => new Date(ms));
 
 /** Records a one-time `state` and returns the provider's consent URL. */
-export function beginOAuth({
-  db,
+export const beginOAuth = Effect.fn('beginOAuth')(function* ({
   integrations,
   userId,
   providerId,
   redirectUri,
-}: Deps & { userId: string; providerId: string; redirectUri: string }) {
+}: {
+  integrations: Integrations;
+  userId: string;
+  providerId: string;
+  redirectUri: string;
+}) {
+  const db = yield* Database;
   const provider = integrations.oauth(providerId);
-  if (!provider) throw new ConnectionError(`${providerId} is not configured on the server.`);
-
+  if (!provider) {
+    return yield* new ConnectionError({
+      message: `${providerId} is not configured on the server.`,
+    });
+  }
+  const at = yield* now;
   db.delete(oauthState)
-    .where(lt(oauthState.createdAt, new Date(Date.now() - STATE_TTL_MS)))
+    .where(lt(oauthState.createdAt, new Date(at.getTime() - STATE_TTL_MS)))
     .run();
   const state = randomBytes(24).toString('base64url');
-  db.insert(oauthState).values({ state, userId, provider: providerId }).run();
+  db.insert(oauthState).values({ state, userId, provider: providerId, createdAt: at }).run();
   return provider.authorizationUrl({ state, redirectUri });
-}
+});
 
 /** Validates and consumes `state`, exchanges the code, and stores the resulting accounts. */
-export async function completeOAuth({
-  db,
+export const completeOAuth = Effect.fn('completeOAuth')(function* ({
   integrations,
-  vault,
   userId,
   providerId,
   state,
   code,
   redirectUri,
-}: Deps & {
-  vault: Vault;
+}: {
+  integrations: Integrations;
   userId: string;
   providerId: string;
   state: string;
   code: string;
   redirectUri: string;
 }) {
+  const db = yield* Database;
   const row = db.select().from(oauthState).where(eq(oauthState.state, state)).get();
   if (row) db.delete(oauthState).where(eq(oauthState.state, state)).run();
+  const at = yield* now;
   if (
     !row ||
     row.provider !== providerId ||
     row.userId !== userId ||
-    row.createdAt.getTime() < Date.now() - STATE_TTL_MS
+    row.createdAt.getTime() < at.getTime() - STATE_TTL_MS
   ) {
-    throw new ConnectionError('This connection link is invalid or expired. Please try again.');
+    return yield* new ConnectionError({
+      message: 'This connection link is invalid or expired. Please try again.',
+    });
   }
 
   const provider = integrations.oauth(providerId);
-  if (!provider) throw new ConnectionError(`${providerId} is not configured on the server.`);
+  if (!provider) {
+    return yield* new ConnectionError({
+      message: `${providerId} is not configured on the server.`,
+    });
+  }
 
-  const accounts = await Effect.runPromise(provider.connect({ code, redirectUri }));
-  saveAccounts(db, vault, userId, accounts);
+  const accounts = yield* provider.connect({ code, redirectUri });
+  yield* saveAccounts(userId, accounts);
   return accounts;
-}
+});
 
 /** Inserts accounts, or refreshes credentials when the same platform account reconnects. */
-export function saveAccounts(db: Db, vault: Vault, userId: string, accounts: ConnectedAccount[]) {
+export const saveAccounts = Effect.fn('saveAccounts')(function* (
+  userId: string,
+  accounts: ConnectedAccount[],
+) {
+  const db = yield* Database;
+  const vault = yield* Vault;
+  const updatedAt = yield* now;
   db.transaction((tx) => {
     for (const account of accounts) {
       const values = {
@@ -93,9 +112,9 @@ export function saveAccounts(db: Db, vault: Vault, userId: string, accounts: Con
         })
         .onConflictDoUpdate({
           target: [socialAccount.platform, socialAccount.externalId],
-          set: { ...values, updatedAt: new Date() },
+          set: { ...values, updatedAt },
         })
         .run();
     }
   });
-}
+});

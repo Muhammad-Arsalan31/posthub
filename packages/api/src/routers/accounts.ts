@@ -29,12 +29,16 @@ export const accountsRouter = {
 
   /** Connectable providers, whether they are set up, and where their app credentials come from. */
   providers: protectedProcedure.handler(({ context }) =>
-    context.integrations.status().map((provider) => ({
-      ...provider,
-      ...(provider.id === 'wordpress'
-        ? { source: null, clientId: null }
-        : context.providerApps.describe(provider.id)),
-    })),
+    context.run(
+      Effect.forEach(context.integrations.status(), (provider) =>
+        provider.id === 'wordpress'
+          ? Effect.succeed({ ...provider, source: null, clientId: null })
+          : Effect.map(context.providerApps.describe(provider.id), (app) => ({
+              ...provider,
+              ...app,
+            })),
+      ),
+    ),
   ),
 
   connectWordPress: protectedProcedure
@@ -47,8 +51,8 @@ export const accountsRouter = {
     )
     .handler(async ({ context, input }) => {
       try {
-        const account = await Effect.runPromise(context.integrations.wordpress.connect(input));
-        saveAccounts(context.db, context.vault, context.user.id, [account]);
+        const account = await context.run(context.integrations.wordpress.connect(input));
+        await context.run(saveAccounts(context.user.id, [account]));
         return { displayName: account.displayName };
       } catch (error) {
         if (error instanceof PlatformError) {
@@ -75,9 +79,10 @@ export const accountsRouter = {
         .get();
       if (!account?.credentials) throw new ORPCError('NOT_FOUND');
       try {
-        return await Effect.runPromise(
-          context.integrations.wordpress.categories(
+        return await context.run(
+          Effect.flatMap(
             context.vault.decrypt<WordPressCredentials>(account.credentials),
+            context.integrations.wordpress.categories,
           ),
         );
       } catch (error) {
