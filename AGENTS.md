@@ -10,7 +10,7 @@ system, and must publish scheduled posts reliably even when no browser window is
 - **Tooling:** Vite+ (`vp`) does dev, build, pack, lint (Oxlint), format (Oxfmt), type check
   (TypeScript 7 via tsgolint) and test (Vitest 5). Root `vite.config.ts` holds the shared lint/fmt config.
 - **Web (`apps/web`):** React 19, TanStack Router (file routes), TanStack Query, TanStack DB, Mantine 9, PWA (vite-plugin-pwa).
-- **Server (`apps/server`):** Hono on `@hono/node-server`, Effect HttpApi (`effect/http-api`), better-auth.
+- **Server (`apps/server`):** Effect's HTTP server (`effect/http` on `@effect/platform-node`), HttpApi (`effect/http-api`), better-auth.
 - **Data:** Drizzle ORM + SQLite (better-sqlite3, native module).
 - **Effect:** Effect v4 (`effect` 4.1.x) for backend logic, being adopted package by package (connectors first).
 
@@ -25,10 +25,10 @@ apps/web/            React PWA
   src/lib/api.ts     API client (`client`) + TanStack Query helpers (`api`); lib/ also has the auth and query clients
   src/providers.tsx  MantineProviders: theme, package CSS, Dates/Modals/Notifications (app + tests)
   src/test/          test setup + renderRoute() helper
-apps/server/         Hono server
+apps/server/         HTTP server (Effect)
   src/env.ts         all config/env in one place (paths, port, secret)
-  src/index.ts       one ManagedRuntime (apiLayer + Publisher + publisherWorker); dispose() on shutdown
-  src/app.ts         createApp({ auth, services }): routes, used by index.ts and tests
+  src/index.ts       Layer.launch(server + publisherWorker + apiLayer) under NodeRuntime.runMain
+  src/app.ts         appRoutes({ auth }): every route as an HttpRouter layer, used by index.ts and tests
 packages/db/         Drizzle schema (src/schema), migrations (drizzle/), createDb, runMigrations
   src/testing.ts     createTestDb(), seedUser() for tests (@posthub/db/testing)
 packages/auth/       createAuth(): better-auth config
@@ -80,7 +80,7 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   resolves the session cookie and provides `CurrentUser`.
 - `/files/:id` streams an uploaded media file to its owner (Range supported). Uploads go through the API
   (`media.upload` takes a `File`) and land in the media folder.
-- `/connect/:provider/start` and `/connect/:provider/callback` are the platform OAuth redirects (plain Hono
+- `/connect/:provider/start` and `/connect/:provider/callback` are the platform OAuth redirects (plain HttpRouter
   routes, because they are browser navigations). They finish by redirecting to `/accounts?connected=N` or `?error=...`.
 
 ## Conventions
@@ -151,7 +151,7 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   (`it.effect`, `Effect.flip` for expected failures, `TestClock` for time); it shares Vite+'s vitest.
 - Backend tests: use `createTestDb()` (in-memory SQLite, real migrations) and `seedUser()`. Call
   handlers through `testContext(db, session).api.<group>.<endpoint>(input)` (the full HTTP pipeline, signed in as
-  `session`; `ctx.fetch` sends raw requests), or go through the server with `createApp({ auth, services, log: false })`.
+  `session`; `ctx.fetch` sends raw requests), or go through the server with `HttpRouter.toWebHandler(appRoutes({ auth }))` (see `apps/server/src/app.test.ts`).
 - Web tests: jsdom + Testing Library. Use `renderRoute('/path')` and `vi.mock('../lib/auth-client')` for auth.
 
 ### Dependencies
@@ -188,6 +188,7 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   them (they only get attached media). `post.wordpressOptions` holds tags (names, created on the site if missing) and
   categories per WordPress account id.
 - When changing what an adapter accepts, update `packages/api/src/post-rules.ts` and `apps/web/src/lib/platforms.ts` together.
+- Shutdown: Ctrl+C/SIGTERM interrupts the program; the publisher's scope waits for jobs in progress.
 - Planned next: public media URLs (for Instagram), LinkedIn video, then a Windows startup/Electron shell.
 
 ## Releases

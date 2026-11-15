@@ -147,3 +147,16 @@ export const MediaHandlers = HttpApiBuilder.group(Api, 'media', (handlers) =>
     });
   }),
 );
+
+/** One of the owner's uploaded files on disk (for `/files/:id`), or null. */
+export const findOwnMedia = (userId: string, id: string) =>
+  Effect.gen(function* () {
+    const db = yield* Database;
+    const mediaDir = yield* MediaDir;
+    const asset = db
+      .select({ storagePath: mediaAsset.storagePath, mimeType: mediaAsset.mimeType })
+      .from(mediaAsset)
+      .where(and(eq(mediaAsset.id, id), eq(mediaAsset.userId, userId)))
+      .get();
+    return asset ? { path: join(mediaDir, asset.storagePath), mimeType: asset.mimeType } : null;
+  });

@@ -47,8 +47,6 @@ catalog:
   '@effect/sql-sqlite-node': 4.1.4
   '@effect/vitest': 4.1.4
   # api
-  hono: ^4.13.18
-  '@hono/node-server': ^2.1.8
   better-auth: ^1.7.22
   # database
   drizzle-orm: ^0.45.4
@@ -70,7 +68,6 @@ allowBuilds:
   sharp: true
 
 minimumReleaseAgeExclude:
-  - '@hono/node-server@2.1.8'
   - jsdom@31.0.1
 
 # vite-plus-core reports its own version (1.x), not Vite 8 — plugins work with it.

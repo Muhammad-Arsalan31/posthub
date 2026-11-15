@@ -18,3 +18,4 @@ export { Database, MediaDir } from './services';
 
 export { Sessions, type SessionsService } from './http-support';
 export { ApiRoutes, apiWebHandler } from './routes';
+export { findOwnMedia } from './routers/media';
