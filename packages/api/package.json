@@ -16,6 +16,7 @@
     "@posthub/db": "workspace:*",
     "@posthub/integrations": "workspace:*",
     "drizzle-orm": "catalog:",
+    "effect": "catalog:",
     "zod": "catalog:"
   },
   "devDependencies": {

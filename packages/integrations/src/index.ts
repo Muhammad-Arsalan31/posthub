@@ -1,5 +1,6 @@
 export * from './types';
-export { PlatformError } from './errors';
+export { PlatformError, platformError, reason, type PlatformErrorOptions } from './errors';
+export type { PublishError, TransportError } from './http';
 export {
   bodyFormats,
   decodeEntities,

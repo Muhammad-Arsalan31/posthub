@@ -1,3 +1,6 @@
+import type { Effect } from 'effect';
+import type { PublishError } from './http';
+
 export type Platform = 'youtube' | 'linkedin' | 'facebook' | 'instagram' | 'tiktok' | 'wordpress';
 
 /** A connection flow. One OAuth login can yield several accounts (e.g. Meta: Pages + Instagram). */
@@ -53,17 +56,23 @@ export interface RefreshResult<C> {
   tokenExpiresAt: Date | null;
 }
 
-/** Publishes to one platform. Method syntax keeps credentials bivariant for the registry. */
+/**
+ * Publishes to one platform. Method syntax keeps credentials bivariant for the registry.
+ * Once the call that creates the post succeeds, the effect must not fail (a retry would post twice).
+ */
 export interface PlatformAdapter<C> {
   readonly platform: Platform;
-  publish(credentials: C, input: PublishInput): Promise<PublishResult>;
-  refresh?(credentials: C): Promise<RefreshResult<C>>;
+  publish(credentials: C, input: PublishInput): Effect.Effect<PublishResult, PublishError>;
+  refresh?(credentials: C): Effect.Effect<RefreshResult<C>, PublishError>;
 }
 
 export interface OAuthProvider {
   readonly id: OAuthProviderId;
   authorizationUrl(params: { state: string; redirectUri: string }): string;
-  connect(params: { code: string; redirectUri: string }): Promise<ConnectedAccount[]>;
+  connect(params: {
+    code: string;
+    redirectUri: string;
+  }): Effect.Effect<ConnectedAccount[], PublishError>;
 }
 
 export const isImage = (m: MediaFile) => m.mimeType.startsWith('image/');

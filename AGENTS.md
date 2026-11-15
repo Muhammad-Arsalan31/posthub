@@ -12,6 +12,7 @@ system, and must publish scheduled posts reliably even when no browser window is
 - **Web (`apps/web`):** React 19, TanStack Router (file routes), TanStack Query, TanStack DB, Mantine 9, PWA (vite-plugin-pwa).
 - **Server (`apps/server`):** Hono on `@hono/node-server`, oRPC, better-auth.
 - **Data:** Drizzle ORM + SQLite (better-sqlite3, native module).
+- **Effect:** Effect v4 (`effect` 4.1.x) for backend logic, being adopted package by package (connectors first).
 
 ## Layout
 
@@ -114,10 +115,15 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 
 - A **provider** is a connect flow (`google`, `meta`, `linkedin`, `wordpress`); an **adapter** publishes to one
   platform. One Meta login yields many accounts (each Page plus its linked Instagram account).
-- Adapters implement `PlatformAdapter<C>`: `publish(credentials, input)` and optional `refresh(credentials)`.
-  They receive decrypted credentials and never touch the DB. Callers persist refreshed credentials.
-- Throw `PlatformError` with the right `retryable` flag (429/5xx default to retryable). After the call that
-  creates the post succeeds, **nothing may throw** (e.g. a permalink lookup), or a retry would post twice.
+- Adapters implement `PlatformAdapter<C>`: `publish(credentials, input)` and optional `refresh(credentials)`, each
+  returning an `Effect` that fails with `PublishError` (`PlatformError | TransportError`). They receive decrypted
+  credentials and never touch the DB. Callers persist refreshed credentials.
+- Fail with `platformError(source, message, { retryable })` (a `Schema.TaggedError`; 429/5xx default to retryable).
+  A `TransportError` (network failure) means the outcome is unknown, so it is never retried automatically.
+  After the call that creates the post succeeds, **the effect must not fail** (e.g. a permalink lookup): catch
+  everything with `Effect.catchCause`, or a retry would post twice.
+- Platform calls go through the `Http` helper in `src/http.ts` (Effect's fetch-based `HttpClient`, with tracing
+  headers turned off). Use `Clock`/`Effect.sleep` rather than `Date.now()`/timers so tests can use `TestClock`.
 - Credentials are encrypted with the vault before storage, and `accounts.list` never selects them.
 - **Developer-app credentials** (client id/secret per OAuth provider) are entered on the Accounts page and stored
   vault-encrypted in `provider_app`. `createIntegrationsManager` (`packages/api/src/provider-apps.ts`) merges them
@@ -130,7 +136,8 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 
 ### Tests
 
-- Import test APIs from `vite-plus/test` (not `vitest`).
+- Import test APIs from `vite-plus/test` (not `vitest`). Tests of Effect code use `@effect/vitest` instead
+  (`it.effect`, `Effect.flip` for expected failures, `TestClock` for time); it shares Vite+'s vitest.
 - Backend tests: use `createTestDb()` (in-memory SQLite, real migrations) and `seedUser()`. Call
   procedures with `call(router.x.y, input, { context })`, or go through HTTP with `createApp({ db, auth, log: false })`.
 - Web tests: jsdom + Testing Library. Use `renderRoute('/path')` and `vi.mock('../lib/auth-client')` for auth.

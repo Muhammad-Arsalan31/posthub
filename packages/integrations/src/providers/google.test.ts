@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'vite-plus/test';
+import { describe, expect, it } from '@effect/vitest';
+import { Effect } from 'effect';
 import { createIntegrations } from '../registry';
 import { createFakeFetch, formParams, tempMedia } from '../testing';
 import type { YouTubeCredentials } from './google';
@@ -20,121 +21,134 @@ describe('youtube', () => {
     expect(url.searchParams.get('scope')).toContain('youtube.upload');
   });
 
-  it('exchanges the code and returns each channel', async () => {
-    const fake = createFakeFetch([
-      [
-        'POST https://oauth2.googleapis.com/token',
-        () => ({ access_token: 'at', refresh_token: 'rt', expires_in: 3600 }),
-      ],
-      [
-        'GET https://www.googleapis.com/youtube/v3/channels',
-        () => ({ items: [{ id: 'UC1', snippet: { title: 'My Channel' } }] }),
-      ],
-    ]);
-    const accounts = await createIntegrations(config, fake)
-      .oauth('google')!
-      .connect({ code: 'c1', redirectUri: 'http://cb' });
+  it.effect('exchanges the code and returns each channel', () =>
+    Effect.gen(function* () {
+      const fake = createFakeFetch([
+        [
+          'POST https://oauth2.googleapis.com/token',
+          () => ({ access_token: 'at', refresh_token: 'rt', expires_in: 3600 }),
+        ],
+        [
+          'GET https://www.googleapis.com/youtube/v3/channels',
+          () => ({ items: [{ id: 'UC1', snippet: { title: 'My Channel' } }] }),
+        ],
+      ]);
+      const accounts = yield* createIntegrations(config, fake)
+        .oauth('google')!
+        .connect({ code: 'c1', redirectUri: 'http://cb' });
 
-    expect(formParams(fake.calls[0]!.body).get('code')).toBe('c1');
-    expect(fake.calls[1]!.headers.get('authorization')).toBe('Bearer at');
-    expect(accounts).toEqual([
-      expect.objectContaining({
-        platform: 'youtube',
-        externalId: 'UC1',
-        displayName: 'My Channel',
-        credentials: expect.objectContaining({ refreshToken: 'rt' }),
-      }),
-    ]);
-  });
+      expect(formParams(fake.calls[0]!.body).get('code')).toBe('c1');
+      expect(fake.calls[1]!.headers.get('authorization')).toBe('Bearer at');
+      expect(accounts).toEqual([
+        expect.objectContaining({
+          platform: 'youtube',
+          externalId: 'UC1',
+          displayName: 'My Channel',
+          credentials: expect.objectContaining({ refreshToken: 'rt' }),
+        }),
+      ]);
+    }),
+  );
 
-  it('fails clearly when Google omits the refresh token', async () => {
-    const fake = createFakeFetch([
-      ['POST https://oauth2.googleapis.com/token', () => ({ access_token: 'at', expires_in: 1 })],
-    ]);
-    await expect(
-      createIntegrations(config, fake).oauth('google')!.connect({ code: 'c', redirectUri: 'x' }),
-    ).rejects.toThrow(/refresh token/);
-  });
+  it.effect('fails clearly when Google omits the refresh token', () =>
+    Effect.gen(function* () {
+      const fake = createFakeFetch([
+        ['POST https://oauth2.googleapis.com/token', () => ({ access_token: 'at', expires_in: 1 })],
+      ]);
+      const error = yield* Effect.flip(
+        createIntegrations(config, fake).oauth('google')!.connect({ code: 'c', redirectUri: 'x' }),
+      );
+      expect(error.message).toMatch(/refresh token/);
+    }),
+  );
 
-  it('uploads a video with a resumable session', async () => {
-    const fake = createFakeFetch([
-      [
-        'POST https://www.googleapis.com/upload/youtube/v3/videos',
-        () => new Response(null, { headers: { location: 'https://upload.example/session' } }),
-      ],
-      ['PUT https://upload.example/session', () => ({ id: 'vid1' })],
-    ]);
-    const result = await createIntegrations(config, fake)
-      .adapter('youtube')!
-      .publish(creds, {
-        title: 'Launch <day>',
+  it.effect('uploads a video with a resumable session', () =>
+    Effect.gen(function* () {
+      const fake = createFakeFetch([
+        [
+          'POST https://www.googleapis.com/upload/youtube/v3/videos',
+          () => new Response(null, { headers: { location: 'https://upload.example/session' } }),
+        ],
+        ['PUT https://upload.example/session', () => ({ id: 'vid1' })],
+      ]);
+      const result = yield* createIntegrations(config, fake)
+        .adapter('youtube')!
+        .publish(creds, {
+          title: 'Launch <day>',
+          text: 'Description',
+          media: [tempMedia('clip.mp4', 'video/mp4')],
+        });
+
+      expect(result).toEqual({ externalId: 'vid1', url: 'https://youtu.be/vid1' });
+      const meta = JSON.parse(fake.calls[0]!.body as string);
+      expect(meta.snippet.title).toBe('Launch day');
+      expect(fake.calls[0]!.headers.get('x-upload-content-type')).toBe('video/mp4');
+      expect(fake.calls[1]!.body).toBe('[binary]');
+    }),
+  );
+
+  it.effect('sets a custom thumbnail, and only warns when that fails', () =>
+    Effect.gen(function* () {
+      let thumbnailStatus = 200;
+      const fake = createFakeFetch([
+        [
+          'POST https://www.googleapis.com/upload/youtube/v3/videos',
+          () => new Response(null, { headers: { location: 'https://upload.example/session' } }),
+        ],
+        ['PUT https://upload.example/session', () => ({ id: 'vid1' })],
+        [
+          'POST https://www.googleapis.com/upload/youtube/v3/thumbnails/set',
+          () =>
+            thumbnailStatus === 200
+              ? {}
+              : Response.json({ error: { message: 'Forbidden' } }, { status: thumbnailStatus }),
+        ],
+      ]);
+      const adapter = createIntegrations(config, fake).adapter('youtube')!;
+      const input = {
+        title: 'Launch',
         text: 'Description',
         media: [tempMedia('clip.mp4', 'video/mp4')],
+        thumbnail: tempMedia('thumb.png', 'image/png'),
+      };
+
+      expect(yield* adapter.publish(creds, input)).toEqual({
+        externalId: 'vid1',
+        url: 'https://youtu.be/vid1',
       });
+      expect(fake.calls[2]!.url).toBe(
+        'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=vid1',
+      );
+      expect(fake.calls[2]!.headers.get('content-type')).toBe('image/png');
 
-    expect(result).toEqual({ externalId: 'vid1', url: 'https://youtu.be/vid1' });
-    const meta = JSON.parse(fake.calls[0]!.body as string);
-    expect(meta.snippet.title).toBe('Launch day');
-    expect(fake.calls[0]!.headers.get('x-upload-content-type')).toBe('video/mp4');
-    expect(fake.calls[1]!.body).toBe('[binary]');
-  });
+      thumbnailStatus = 403;
+      const result = yield* adapter.publish(creds, input);
+      expect(result).toMatchObject({ externalId: 'vid1' });
+      expect(result.warning).toMatch(/thumbnail was not set: Forbidden/);
+    }),
+  );
 
-  it('sets a custom thumbnail, and only warns when that fails', async () => {
-    let thumbnailStatus = 200;
-    const fake = createFakeFetch([
-      [
-        'POST https://www.googleapis.com/upload/youtube/v3/videos',
-        () => new Response(null, { headers: { location: 'https://upload.example/session' } }),
-      ],
-      ['PUT https://upload.example/session', () => ({ id: 'vid1' })],
-      [
-        'POST https://www.googleapis.com/upload/youtube/v3/thumbnails/set',
-        () =>
-          thumbnailStatus === 200
-            ? {}
-            : Response.json({ error: { message: 'Forbidden' } }, { status: thumbnailStatus }),
-      ],
-    ]);
-    const adapter = createIntegrations(config, fake).adapter('youtube')!;
-    const input = {
-      title: 'Launch',
-      text: 'Description',
-      media: [tempMedia('clip.mp4', 'video/mp4')],
-      thumbnail: tempMedia('thumb.png', 'image/png'),
-    };
+  it.effect('refuses posts without a video, without retrying', () =>
+    Effect.gen(function* () {
+      const error = yield* createIntegrations(config)
+        .adapter('youtube')!
+        .publish(creds, { title: 't', text: 'x', media: [] })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({ retryable: false });
+    }),
+  );
 
-    expect(await adapter.publish(creds, input)).toEqual({
-      externalId: 'vid1',
-      url: 'https://youtu.be/vid1',
-    });
-    expect(fake.calls[2]!.url).toBe(
-      'https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=vid1',
-    );
-    expect(fake.calls[2]!.headers.get('content-type')).toBe('image/png');
-
-    thumbnailStatus = 403;
-    const result = await adapter.publish(creds, input);
-    expect(result).toMatchObject({ externalId: 'vid1' });
-    expect(result.warning).toMatch(/thumbnail was not set: Forbidden/);
-  });
-
-  it('refuses posts without a video, without retrying', async () => {
-    const error = await createIntegrations(config)
-      .adapter('youtube')!
-      .publish(creds, { title: 't', text: 'x', media: [] })
-      .catch((e: unknown) => e);
-    expect(error).toMatchObject({ retryable: false });
-  });
-
-  it('refreshes the access token', async () => {
-    const fake = createFakeFetch([
-      [
-        'POST https://oauth2.googleapis.com/token',
-        () => ({ access_token: 'new', expires_in: 3600 }),
-      ],
-    ]);
-    const refreshed = await createIntegrations(config, fake).adapter('youtube')!.refresh!(creds);
-    expect(refreshed.credentials).toMatchObject({ accessToken: 'new', refreshToken: 'rt' });
-    expect(formParams(fake.calls[0]!.body).get('grant_type')).toBe('refresh_token');
-  });
+  it.effect('refreshes the access token', () =>
+    Effect.gen(function* () {
+      const fake = createFakeFetch([
+        [
+          'POST https://oauth2.googleapis.com/token',
+          () => ({ access_token: 'new', expires_in: 3600 }),
+        ],
+      ]);
+      const refreshed = yield* createIntegrations(config, fake).adapter('youtube')!.refresh!(creds);
+      expect(refreshed.credentials).toMatchObject({ accessToken: 'new', refreshToken: 'rt' });
+      expect(formParams(fake.calls[0]!.body).get('grant_type')).toBe('refresh_token');
+    }),
+  );
 });

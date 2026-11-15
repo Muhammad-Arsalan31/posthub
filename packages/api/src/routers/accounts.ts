@@ -1,3 +1,4 @@
+import { Effect } from 'effect';
 import { ORPCError } from '@orpc/server';
 import { socialAccount } from '@posthub/db';
 import { PlatformError, type WordPressCredentials } from '@posthub/integrations';
@@ -46,7 +47,7 @@ export const accountsRouter = {
     )
     .handler(async ({ context, input }) => {
       try {
-        const account = await context.integrations.wordpress.connect(input);
+        const account = await Effect.runPromise(context.integrations.wordpress.connect(input));
         saveAccounts(context.db, context.vault, context.user.id, [account]);
         return { displayName: account.displayName };
       } catch (error) {
@@ -74,8 +75,10 @@ export const accountsRouter = {
         .get();
       if (!account?.credentials) throw new ORPCError('NOT_FOUND');
       try {
-        return await context.integrations.wordpress.categories(
-          context.vault.decrypt<WordPressCredentials>(account.credentials),
+        return await Effect.runPromise(
+          context.integrations.wordpress.categories(
+            context.vault.decrypt<WordPressCredentials>(account.credentials),
+          ),
         );
       } catch (error) {
         if (error instanceof PlatformError) {

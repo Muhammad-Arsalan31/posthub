@@ -1,3 +1,4 @@
+import { Effect } from 'effect';
 // Platform connect flows, shared by the Hono OAuth routes and the oRPC accounts router.
 import { randomBytes, randomUUID } from 'node:crypto';
 import { oauthState, socialAccount, type Db } from '@posthub/db';
@@ -67,7 +68,7 @@ export async function completeOAuth({
   const provider = integrations.oauth(providerId);
   if (!provider) throw new ConnectionError(`${providerId} is not configured on the server.`);
 
-  const accounts = await provider.connect({ code, redirectUri });
+  const accounts = await Effect.runPromise(provider.connect({ code, redirectUri }));
   saveAccounts(db, vault, userId, accounts);
   return accounts;
 }

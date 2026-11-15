@@ -41,6 +41,11 @@ catalog:
   recharts: ^3.10.1
   vite-plugin-pwa: ^2.0.0
   '@vite-pwa/assets-generator': ^2.0.0
+  # effect
+  effect: 4.1.4
+  '@effect/platform-node': 4.1.4
+  '@effect/sql-sqlite-node': 4.1.4
+  '@effect/vitest': 4.1.4
   # api
   hono: ^4.13.18
   '@hono/node-server': ^2.1.8

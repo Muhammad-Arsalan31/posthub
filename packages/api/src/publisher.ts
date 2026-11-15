@@ -1,3 +1,4 @@
+import { Effect } from 'effect';
 // The publishing worker. Jobs live in SQLite (`post_target` rows), so nothing is lost on restart:
 //   1. A scheduled post that is due moves to `publishing`.
 //   2. Each of its `pending` targets is claimed (status `publishing`, attempts + 1), published through
@@ -19,6 +20,7 @@ import {
 import {
   bodyFormats,
   PlatformError,
+  platformError,
   PROVIDERS,
   refreshIfExpiring,
   type Integrations,
@@ -199,19 +201,15 @@ export function createPublisher({
       platform = account.platform;
 
       if (account.status !== 'active' || !account.credentials) {
-        throw new PlatformError(
-          platform,
-          'Reconnect this account on the Accounts page, then retry.',
-          {
-            retryable: false,
-          },
-        );
+        throw platformError(platform, 'Reconnect this account on the Accounts page, then retry.', {
+          retryable: false,
+        });
       }
       const adapter = integrations().adapter(account.platform);
       if (!adapter) {
         const label =
           PROVIDERS.find((p) => p.platforms.includes(account.platform))?.label ?? platform;
-        throw new PlatformError(
+        throw platformError(
           platform,
           `${label} is not set up. Add its app credentials on the Accounts page, then retry.`,
           { retryable: false },
@@ -220,11 +218,8 @@ export function createPublisher({
 
       phase = 'refresh';
       let credentials = vault.decrypt(account.credentials);
-      const refreshed = await refreshIfExpiring(
-        adapter,
-        credentials,
-        account.tokenExpiresAt,
-        now().getTime(),
+      const refreshed = await Effect.runPromise(
+        refreshIfExpiring(adapter, credentials, account.tokenExpiresAt, now().getTime()),
       );
       if (refreshed) {
         credentials = refreshed.credentials;
@@ -239,25 +234,27 @@ export function createPublisher({
 
       phase = 'publish';
       const body = bodyFormats(content.body);
-      const result = await adapter.publish(credentials, {
-        title: content.title,
-        text: target.captionOverride ?? body.text,
-        html: body.html,
-        link: content.link ?? undefined,
-        media: loadMedia(content.id),
-        featuredImage: mediaFile(content.featuredMediaId, content.userId),
-        thumbnail: mediaFile(content.thumbnailMediaId, content.userId),
-        inlineImages: inlineMediaIds(content.body).flatMap((mediaId) => {
-          const file = mediaFile(mediaId, content.userId);
-          return file ? [{ ref: inlineRef(mediaId), file }] : [];
+      const result = await Effect.runPromise(
+        adapter.publish(credentials, {
+          title: content.title,
+          text: target.captionOverride ?? body.text,
+          html: body.html,
+          link: content.link ?? undefined,
+          media: loadMedia(content.id),
+          featuredImage: mediaFile(content.featuredMediaId, content.userId),
+          thumbnail: mediaFile(content.thumbnailMediaId, content.userId),
+          inlineImages: inlineMediaIds(content.body).flatMap((mediaId) => {
+            const file = mediaFile(mediaId, content.userId);
+            return file ? [{ ref: inlineRef(mediaId), file }] : [];
+          }),
+          wordpress: content.wordpressOptions
+            ? {
+                tags: content.wordpressOptions.tags,
+                categoryIds: content.wordpressOptions.categories[account.id] ?? [],
+              }
+            : undefined,
         }),
-        wordpress: content.wordpressOptions
-          ? {
-              tags: content.wordpressOptions.tags,
-              categoryIds: content.wordpressOptions.categories[account.id] ?? [],
-            }
-          : undefined,
-      });
+      );
       finish(target, {
         status: 'published',
         externalPostId: result.externalId,

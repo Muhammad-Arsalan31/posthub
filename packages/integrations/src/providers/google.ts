@@ -1,12 +1,13 @@
 // YouTube via Google OAuth 2.0 + YouTube Data API v3 (resumable uploads).
-import { PlatformError } from '../errors';
-import { bearer, fileBlob, form, request, type HttpDeps } from '../http';
+import { Cause, Clock, Effect } from 'effect';
+import { platformError, reason, PlatformError } from '../errors';
+import { bearer, fileBody, form, get, json, post, put, type Http } from '../http';
 import {
   isVideo,
   type ConnectedAccount,
   type OAuthProvider,
   type PlatformAdapter,
-  type PublishInput,
+  type PublishResult,
 } from '../types';
 
 export interface GoogleConfig {
@@ -39,12 +40,21 @@ interface TokenResponse {
   refresh_token?: string;
 }
 
-export function createGoogle(config: GoogleConfig, deps: HttpDeps) {
+/** Why an optional step failed, in words for the owner. */
+const failureReason = (cause: Cause.Cause<unknown>) => {
+  const error = Cause.squash(cause);
+  if (error instanceof PlatformError) return reason(error);
+  return error instanceof Error ? error.message : String(error);
+};
+
+export function createGoogle(config: GoogleConfig, http: Http) {
   const token = (fields: Record<string, string>) =>
-    request<TokenResponse>(deps, 'youtube', TOKEN_URL, {
-      method: 'POST',
-      body: form({ client_id: config.clientId, client_secret: config.clientSecret, ...fields }),
-    }).then((r) => r.data);
+    http<TokenResponse>(
+      'youtube',
+      post(TOKEN_URL, {
+        body: form({ client_id: config.clientId, client_secret: config.clientSecret, ...fields }),
+      }),
+    ).pipe(Effect.map((r) => r.data));
 
   const provider: OAuthProvider = {
     id: 'google',
@@ -64,127 +74,134 @@ export function createGoogle(config: GoogleConfig, deps: HttpDeps) {
       return `${AUTH_URL}?${params.toString()}`;
     },
 
-    async connect({ code, redirectUri }) {
-      const tokens = await token({
-        code,
-        redirect_uri: redirectUri,
-        grant_type: 'authorization_code',
-      });
-      if (!tokens.refresh_token) {
-        throw new PlatformError(
+    connect: ({ code, redirectUri }) =>
+      Effect.gen(function* () {
+        const tokens = yield* token({
+          code,
+          redirect_uri: redirectUri,
+          grant_type: 'authorization_code',
+        });
+        const refreshToken = tokens.refresh_token;
+        if (!refreshToken) {
+          return yield* platformError(
+            'youtube',
+            'Google did not return a refresh token. Remove PostHub from your Google account permissions and connect again.',
+          );
+        }
+        const { data } = yield* http<{ items?: Array<{ id: string; snippet: { title: string } }> }>(
           'youtube',
-          'Google did not return a refresh token. Remove PostHub from your Google account permissions and connect again.',
+          get(`${API}/channels?part=snippet&mine=true`, { headers: bearer(tokens.access_token) }),
         );
-      }
-      const { data } = await request<{ items?: Array<{ id: string; snippet: { title: string } }> }>(
-        deps,
-        'youtube',
-        `${API}/channels?part=snippet&mine=true`,
-        { headers: bearer(tokens.access_token) },
-      );
-      const channels = data.items ?? [];
-      if (channels.length === 0) {
-        throw new PlatformError('youtube', 'This Google account has no YouTube channel.');
-      }
-      const expiresAt = Date.now() + tokens.expires_in * 1000;
-      return channels.map((channel): ConnectedAccount<YouTubeCredentials> => ({
-        platform: 'youtube',
-        externalId: channel.id,
-        displayName: channel.snippet.title,
-        credentials: {
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token!,
-          expiresAt,
-        },
-        tokenExpiresAt: new Date(expiresAt),
-      }));
-    },
+        const channels = data.items ?? [];
+        if (channels.length === 0) {
+          return yield* platformError('youtube', 'This Google account has no YouTube channel.');
+        }
+        const expiresAt = (yield* Clock.currentTimeMillis) + tokens.expires_in * 1000;
+        return channels.map((channel): ConnectedAccount<YouTubeCredentials> => ({
+          platform: 'youtube',
+          externalId: channel.id,
+          displayName: channel.snippet.title,
+          credentials: { accessToken: tokens.access_token, refreshToken, expiresAt },
+          tokenExpiresAt: new Date(expiresAt),
+        }));
+      }),
   };
 
   const youtube: PlatformAdapter<YouTubeCredentials> = {
     platform: 'youtube',
 
-    async refresh(credentials) {
-      const tokens = await token({
-        refresh_token: credentials.refreshToken,
-        grant_type: 'refresh_token',
-      });
-      const expiresAt = Date.now() + tokens.expires_in * 1000;
-      return {
-        credentials: {
-          accessToken: tokens.access_token,
-          refreshToken: tokens.refresh_token ?? credentials.refreshToken,
-          expiresAt,
-        },
-        tokenExpiresAt: new Date(expiresAt),
-      };
-    },
-
-    async publish(credentials, input: PublishInput) {
-      const video = input.media.find(isVideo);
-      if (!video) {
-        throw new PlatformError('youtube', 'YouTube posts need a video.', { retryable: false });
-      }
-
-      // 1. Open a resumable upload session with the video metadata.
-      const session = await request(deps, 'youtube', UPLOAD_URL, {
-        method: 'POST',
-        headers: {
-          ...bearer(credentials.accessToken),
-          'content-type': 'application/json; charset=UTF-8',
-          'x-upload-content-type': video.mimeType,
-          'x-upload-content-length': String(video.sizeBytes),
-        },
-        body: JSON.stringify({
-          snippet: {
-            // YouTube rejects titles over 100 chars or containing angle brackets.
-            title: (input.title || video.fileName).replace(/[<>]/g, '').slice(0, 100),
-            description: input.text.replace(/[<>]/g, '').slice(0, 5000),
-            categoryId: '22',
+    refresh: (credentials) =>
+      Effect.gen(function* () {
+        const tokens = yield* token({
+          refresh_token: credentials.refreshToken,
+          grant_type: 'refresh_token',
+        });
+        const expiresAt = (yield* Clock.currentTimeMillis) + tokens.expires_in * 1000;
+        return {
+          credentials: {
+            accessToken: tokens.access_token,
+            refreshToken: tokens.refresh_token ?? credentials.refreshToken,
+            expiresAt,
           },
-          status: {
-            privacyStatus: config.youtubePrivacy ?? 'public',
-            selfDeclaredMadeForKids: false,
-          },
-        }),
-      });
-      const uploadUrl = session.response.headers.get('location');
-      if (!uploadUrl) {
-        throw new PlatformError('youtube', 'Upload session was not created.', { retryable: true });
-      }
+          tokenExpiresAt: new Date(expiresAt),
+        };
+      }),
 
-      // 2. Stream the file to the session URL.
-      const { data } = await request<{ id: string }>(deps, 'youtube', uploadUrl, {
-        method: 'PUT',
-        headers: { ...bearer(credentials.accessToken), 'content-type': video.mimeType },
-        body: await fileBlob(video),
-      });
-      const result = { externalId: data.id, url: `https://youtu.be/${data.id}` };
+    publish: (credentials, input) =>
+      Effect.gen(function* () {
+        const video = input.media.find(isVideo);
+        if (!video) {
+          return yield* platformError('youtube', 'YouTube posts need a video.', {
+            retryable: false,
+          });
+        }
 
-      // 3. Optional custom thumbnail. The video exists now, so nothing below may throw:
-      //    a failure becomes a warning instead of a retry that would upload the video twice.
-      if (input.thumbnail) {
-        try {
-          const url = `${THUMBNAIL_URL}?videoId=${encodeURIComponent(data.id)}`;
-          await request(deps, 'youtube', url, {
-            method: 'POST',
+        // 1. Open a resumable upload session with the video metadata.
+        const session = yield* http(
+          'youtube',
+          post(UPLOAD_URL, {
             headers: {
               ...bearer(credentials.accessToken),
-              'content-type': input.thumbnail.mimeType,
+              'x-upload-content-type': video.mimeType,
+              'x-upload-content-length': String(video.sizeBytes),
             },
-            body: await fileBlob(input.thumbnail),
+            body: json(
+              {
+                snippet: {
+                  // YouTube rejects titles over 100 chars or containing angle brackets.
+                  title: (input.title || video.fileName).replace(/[<>]/g, '').slice(0, 100),
+                  description: input.text.replace(/[<>]/g, '').slice(0, 5000),
+                  categoryId: '22',
+                },
+                status: {
+                  privacyStatus: config.youtubePrivacy ?? 'public',
+                  selfDeclaredMadeForKids: false,
+                },
+              },
+              'application/json; charset=UTF-8',
+            ),
+          }),
+        );
+        const uploadUrl = session.response.headers['location'];
+        if (!uploadUrl) {
+          return yield* platformError('youtube', 'Upload session was not created.', {
+            retryable: true,
           });
-        } catch (error) {
-          const reason =
-            error instanceof Error ? error.message.replace(/^youtube: /, '') : String(error);
-          return {
-            ...result,
-            warning: `Published, but the thumbnail was not set: ${reason}. Custom thumbnails need a verified YouTube channel.`,
-          };
         }
-      }
-      return result;
-    },
+
+        // 2. Stream the file to the session URL.
+        const { data } = yield* http<{ id: string }>(
+          'youtube',
+          put(uploadUrl, {
+            headers: bearer(credentials.accessToken),
+            body: yield* fileBody(video),
+          }),
+        );
+        const result: PublishResult = { externalId: data.id, url: `https://youtu.be/${data.id}` };
+
+        // 3. Optional custom thumbnail. The video exists now, so nothing below may fail:
+        //    any failure becomes a warning instead of a retry that would upload the video twice.
+        const thumbnail = input.thumbnail;
+        if (!thumbnail) return result;
+        return yield* Effect.gen(function* () {
+          const url = `${THUMBNAIL_URL}?videoId=${encodeURIComponent(data.id)}`;
+          yield* http(
+            'youtube',
+            post(url, {
+              headers: bearer(credentials.accessToken),
+              body: yield* fileBody(thumbnail),
+            }),
+          );
+          return result;
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.succeed({
+              ...result,
+              warning: `Published, but the thumbnail was not set: ${failureReason(cause)}. Custom thumbnails need a verified YouTube channel.`,
+            }),
+          ),
+        );
+      }),
   };
 
   return { provider, adapters: { youtube } };
