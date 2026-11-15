@@ -1,17 +1,17 @@
 import { queryCollectionOptions } from '@tanstack/query-db-collection';
 import { createCollection } from '@tanstack/react-db';
-import { client } from '../lib/orpc';
+import type { Post, PostChanges } from '@posthub/contract';
+import { client } from '../lib/api';
 import { queryClient } from '../lib/query-client';
 
-export type Post = Awaited<ReturnType<typeof client.posts.list>>[number];
-export type PostTarget = Post['targets'][number];
+export type { Post, PostTarget } from '@posthub/contract';
 
 /** Statuses the owner sets; the server's publisher moves posts on from `scheduled`. */
 const editableStatus = (status: Post['status']) => (status === 'scheduled' ? 'scheduled' : 'draft');
 
 /** Fields the server accepts from the composer. Targets and timestamps are server-owned. */
 function editableFields(post: Partial<Post>) {
-  const fields: Parameters<typeof client.posts.update>[0]['changes'] = {};
+  const fields: { -readonly [K in keyof PostChanges]: PostChanges[K] } = {};
   if (post.title !== undefined) fields.title = post.title;
   if (post.body !== undefined) fields.body = post.body;
   if (post.link !== undefined) fields.link = post.link;

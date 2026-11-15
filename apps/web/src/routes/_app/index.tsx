@@ -24,7 +24,7 @@ import dayjs from 'dayjs';
 import { useState } from 'react';
 import { postsCollection, type Post, type PostTarget } from '../../collections/posts';
 import { bodyToText } from '../../lib/body';
-import { client, orpc } from '../../lib/orpc';
+import { api, client } from '../../lib/api';
 import { PLATFORM_COLORS, PLATFORM_LABELS, type Account } from '../../lib/platforms';
 
 export const Route = createFileRoute('/_app/')({
@@ -56,7 +56,7 @@ const formatTime = (date: Date) => dayjs(date).format('ddd D MMM YYYY, HH:mm');
 function PostsPage() {
   const { session } = Route.useRouteContext();
   const [filter, setFilter] = useState<Filter>('all');
-  const accounts = useQuery(orpc.accounts.list.queryOptions());
+  const accounts = useQuery(api.accounts.list.queryOptions());
   const { data: posts, isLoading } = useLiveQuery((q) =>
     q.from({ post: postsCollection }).orderBy(({ post }) => post.updatedAt, 'desc'),
   );

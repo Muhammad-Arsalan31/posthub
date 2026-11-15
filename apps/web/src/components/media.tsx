@@ -18,7 +18,7 @@ import { Dropzone } from '@mantine/dropzone';
 import { notifications } from '@mantine/notifications';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState, type ReactNode } from 'react';
-import { client, orpc } from '../lib/orpc';
+import { api, client } from '../lib/api';
 import { formatBytes, isVideo, mediaUrl, type MediaItem } from '../lib/platforms';
 
 export const MEDIA_ACCEPT = ['image/*', 'video/*'];
@@ -74,7 +74,7 @@ export function useUploadMedia() {
         }
       }
     } finally {
-      await queryClient.invalidateQueries({ queryKey: orpc.media.key() });
+      await queryClient.invalidateQueries({ queryKey: api.media.key() });
     }
     return uploaded;
   }
@@ -123,7 +123,7 @@ export function MediaLibraryModal(props: {
   /** Only offer matching files (e.g. images for a thumbnail). */
   filter?: (item: MediaItem) => boolean;
 }) {
-  const query = useQuery({ ...orpc.media.list.queryOptions(), enabled: props.opened });
+  const query = useQuery({ ...api.media.list.queryOptions(), enabled: props.opened });
   const media = { ...query, data: props.filter ? query.data?.filter(props.filter) : query.data };
 
   return (

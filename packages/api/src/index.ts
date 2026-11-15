@@ -1,13 +1,5 @@
-import { PLATFORMS } from '@posthub/db';
-import { protectedProcedure, publicProcedure } from './procedures';
-import { accountsRouter } from './routers/accounts';
-import { mediaRouter } from './routers/media';
-import { postsRouter } from './routers/posts';
-import { providerAppsRouter } from './routers/provider-apps';
-
-export type { Context } from './procedures';
 export { beginOAuth, completeOAuth, ConnectionError, saveAccounts } from './connections';
-export { apiLayer, rpcContext, type ApiLayerOptions, type ApiServices } from './layer';
+export { apiLayer, type ApiLayerOptions, type ApiServices } from './layer';
 export {
   INTERRUPTED_MESSAGE,
   Publisher,
@@ -24,14 +16,5 @@ export {
 } from './provider-apps';
 export { Database, MediaDir } from './services';
 
-export const router = {
-  health: publicProcedure.handler(() => ({ ok: true, time: new Date() })),
-  me: protectedProcedure.handler(({ context }) => context.user),
-  platforms: publicProcedure.handler(() => PLATFORMS),
-  posts: postsRouter,
-  media: mediaRouter,
-  accounts: accountsRouter,
-  providerApps: providerAppsRouter,
-};
-
-export type AppRouter = typeof router;
+export { Sessions, type SessionsService } from './http-support';
+export { ApiRoutes, apiWebHandler } from './routes';

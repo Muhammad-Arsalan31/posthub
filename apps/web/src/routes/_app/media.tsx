@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
 import dayjs from 'dayjs';
 import { MediaDropzone, MediaThumb, RemoveButton, useUploadMedia } from '../../components/media';
-import { orpc } from '../../lib/orpc';
+import { api } from '../../lib/api';
 import { formatBytes, type MediaItem } from '../../lib/platforms';
 
 export const Route = createFileRoute('/_app/media')({
@@ -14,11 +14,11 @@ export const Route = createFileRoute('/_app/media')({
 
 function MediaPage() {
   const queryClient = useQueryClient();
-  const media = useQuery(orpc.media.list.queryOptions());
+  const media = useQuery(api.media.list.queryOptions());
   const { upload, uploading } = useUploadMedia();
   const remove = useMutation(
-    orpc.media.delete.mutationOptions({
-      onSuccess: () => queryClient.invalidateQueries({ queryKey: orpc.media.key() }),
+    api.media.delete.mutationOptions({
+      onSuccess: () => queryClient.invalidateQueries({ queryKey: api.media.key() }),
       onError: (error) => notifications.show({ color: 'red', message: error.message }),
     }),
   );

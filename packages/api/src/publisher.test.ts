@@ -1,4 +1,3 @@
-import { call } from '@orpc/server';
 import { post, postTarget, socialAccount, type Db } from '@posthub/db';
 import { createTestDb, seedUser } from '@posthub/db/testing';
 import type { WordPressCredentials } from '@posthub/integrations';
@@ -7,11 +6,9 @@ import { describe, expect, it } from '@effect/vitest';
 import { eq } from 'drizzle-orm';
 import { Context as Services, Effect, Layer } from 'effect';
 import { TestClock } from 'effect/testing';
-import { router } from './index';
 import { apiLayer } from './layer';
-import type { Context } from './procedures';
 import { INTERRUPTED_MESSAGE, Publisher, RETRY_DELAYS_MS } from './publisher';
-import { sessionFor, TEST_ENCRYPTION_KEY, testContext } from './testing';
+import { sessionFor, TEST_ENCRYPTION_KEY, testContext, type TestContext } from './testing';
 
 const API = 'https://blog.test/wp-json';
 const credentials: WordPressCredentials = {
@@ -77,19 +74,15 @@ const setup = Effect.fnUntraced(function* (
       } = {},
     ) =>
       Effect.promise(() =>
-        call(
-          router.posts.create,
-          {
-            id: crypto.randomUUID(),
-            title: 'Hello',
-            body: 'First post',
-            status: 'scheduled',
-            scheduledAt,
-            accountIds: [account.id],
-            ...extra,
-          },
-          { context: ctx },
-        ),
+        ctx.api.posts.create({
+          id: crypto.randomUUID(),
+          title: 'Hello',
+          body: 'First post',
+          status: 'scheduled',
+          scheduledAt,
+          accountIds: [account.id],
+          ...extra,
+        }),
       ),
   };
 });
@@ -99,13 +92,9 @@ const state = (db: Db, postId: string) => ({
   target: db.select().from(postTarget).where(eq(postTarget.postId, postId)).get()!,
 });
 
-const uploadImage = (ctx: Context) =>
+const uploadImage = (ctx: TestContext) =>
   Effect.promise(() =>
-    call(
-      router.media.upload,
-      { file: new File(['img'], 'cover.png', { type: 'image/png' }) },
-      { context: ctx },
-    ),
+    ctx.api.media.upload({ file: new File(['img'], 'cover.png', { type: 'image/png' }) }),
   );
 
 describe('publisher', () => {

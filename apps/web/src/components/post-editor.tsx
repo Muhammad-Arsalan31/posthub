@@ -22,7 +22,7 @@ import { Link } from '@tanstack/react-router';
 import dayjs from 'dayjs';
 import { useMemo, useState } from 'react';
 import { postsCollection, type Post } from '../collections/posts';
-import { orpc } from '../lib/orpc';
+import { api } from '../lib/api';
 import {
   PLATFORM_COLORS,
   PLATFORM_LABELS,
@@ -93,8 +93,8 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
   // Keeps fresh uploads visible before the library query refetches.
   const [recent, setRecent] = useState<MediaItem[]>([]);
 
-  const accounts = useQuery(orpc.accounts.list.queryOptions());
-  const mediaList = useQuery(orpc.media.list.queryOptions());
+  const accounts = useQuery(api.accounts.list.queryOptions());
+  const mediaList = useQuery(api.media.list.queryOptions());
   const { upload, uploading } = useUploadMedia();
 
   const mediaById = useMemo(() => {

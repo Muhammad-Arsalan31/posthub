@@ -1,15 +1,19 @@
-import { call, ORPCError } from '@orpc/server';
 import { post, postTarget, socialAccount, type Db, type Platform } from '@posthub/db';
 import { createTestDb, seedUser } from '@posthub/db/testing';
 import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vite-plus/test';
-import { router } from '../index';
-import type { Context } from '../procedures';
-import { sessionFor, testContext } from '../testing';
+import { sessionFor, testContext, type TestContext } from '../testing';
 
-const code = (c: string) => (e: unknown) => e instanceof ORPCError && e.code === c;
+const TAGS: Record<string, string> = {
+  BAD_REQUEST: 'BadRequest',
+  NOT_FOUND: 'NotFound',
+  CONFLICT: 'Conflict',
+  UNAUTHORIZED: 'Unauthorized',
+  BAD_GATEWAY: 'BadGateway',
+};
+const code = (c: string) => (e: unknown) => (e as { _tag?: string } | null)?._tag === TAGS[c];
 
-function seedAccount(ctx: Context, platform: Platform, displayName: string = platform) {
+function seedAccount(ctx: TestContext, platform: Platform, displayName: string = platform) {
   return ctx.db
     .insert(socialAccount)
     .values({
@@ -28,7 +32,7 @@ const video = new File(['v'], 'clip.mp4', { type: 'video/mp4' });
 
 describe('posts router', () => {
   let db: Db;
-  let ctx: Context;
+  let ctx: TestContext;
 
   beforeEach(() => {
     db = createTestDb();
@@ -36,14 +40,12 @@ describe('posts router', () => {
   });
 
   it('rejects anonymous callers', async () => {
-    await expect(
-      call(router.posts.list, undefined, { context: testContext(db, null) }),
-    ).rejects.toSatisfy(code('UNAUTHORIZED'));
+    await expect(testContext(db, null).api.posts.list()).rejects.toSatisfy(code('UNAUTHORIZED'));
   });
 
   it('creates, lists, updates and deletes a draft', async () => {
     const id = crypto.randomUUID();
-    const created = await call(router.posts.create, { id, title: '  Launch  ' }, { context: ctx });
+    const created = await ctx.api.posts.create({ id, title: '  Launch  ' });
     expect(created).toMatchObject({
       id,
       title: 'Launch',
@@ -55,42 +57,35 @@ describe('posts router', () => {
       targets: [],
     });
 
-    expect(await call(router.posts.list, undefined, { context: ctx })).toHaveLength(1);
+    expect(await ctx.api.posts.list()).toHaveLength(1);
 
-    const updated = await call(
-      router.posts.update,
-      { id, changes: { body: 'Hello', link: 'https://example.com' } },
-      { context: ctx },
-    );
+    const updated = await ctx.api.posts.update({
+      id,
+      changes: { body: 'Hello', link: 'https://example.com' },
+    });
     expect(updated).toMatchObject({ title: 'Launch', body: 'Hello', link: 'https://example.com' });
 
-    await call(router.posts.delete, { id }, { context: ctx });
-    expect(await call(router.posts.list, undefined, { context: ctx })).toHaveLength(0);
+    await ctx.api.posts.delete({ id });
+    expect(await ctx.api.posts.list()).toHaveLength(0);
   });
 
   it('schedules a post with one target per account and keeps media order', async () => {
     const wordpress = seedAccount(ctx, 'wordpress', 'Blog');
     const tiktok = seedAccount(ctx, 'tiktok', 'Me on TikTok');
-    const first = await call(router.media.upload, { file: video }, { context: ctx });
-    const second = await call(
-      router.media.upload,
-      { file: new File(['i'], 'a.png', { type: 'image/png' }) },
-      { context: ctx },
-    );
+    const first = await ctx.api.media.upload({ file: video });
+    const second = await ctx.api.media.upload({
+      file: new File(['i'], 'a.png', { type: 'image/png' }),
+    });
 
-    const scheduled = await call(
-      router.posts.create,
-      {
-        id: crypto.randomUUID(),
-        title: 'Launch',
-        body: 'We are live',
-        status: 'scheduled',
-        scheduledAt: new Date('2030-01-01T09:00:00Z'),
-        accountIds: [wordpress.id, tiktok.id],
-        mediaIds: [second.id, first.id],
-      },
-      { context: ctx },
-    );
+    const scheduled = await ctx.api.posts.create({
+      id: crypto.randomUUID(),
+      title: 'Launch',
+      body: 'We are live',
+      status: 'scheduled',
+      scheduledAt: new Date('2030-01-01T09:00:00Z'),
+      accountIds: [wordpress.id, tiktok.id],
+      mediaIds: [second.id, first.id],
+    });
 
     expect(scheduled.status).toBe('scheduled');
     expect(scheduled.mediaIds).toEqual([second.id, first.id]);
@@ -100,11 +95,10 @@ describe('posts router', () => {
 
     // Deselecting an account removes its target; keeping one keeps the same row.
     const kept = scheduled.targets.find((t) => t.socialAccountId === wordpress.id)!;
-    const updated = await call(
-      router.posts.update,
-      { id: scheduled.id, changes: { accountIds: [wordpress.id] } },
-      { context: ctx },
-    );
+    const updated = await ctx.api.posts.update({
+      id: scheduled.id,
+      changes: { accountIds: [wordpress.id] },
+    });
     expect(updated.targets.map((t) => t.id)).toEqual([kept.id]);
   });
 
@@ -112,76 +106,67 @@ describe('posts router', () => {
     const youtube = seedAccount(ctx, 'youtube', 'Channel');
     const base = { title: 'Hi', status: 'scheduled' as const, scheduledAt: new Date() };
 
-    await expect(
-      call(router.posts.create, { ...base, id: crypto.randomUUID() }, { context: ctx }),
-    ).rejects.toSatisfy(
+    await expect(ctx.api.posts.create({ ...base, id: crypto.randomUUID() })).rejects.toSatisfy(
       (e) => code('BAD_REQUEST')(e) && (e as Error).message.includes('at least one account'),
     );
     await expect(
-      call(
-        router.posts.create,
-        { ...base, id: crypto.randomUUID(), accountIds: [youtube.id] },
-        { context: ctx },
-      ),
+      ctx.api.posts.create({ ...base, id: crypto.randomUUID(), accountIds: [youtube.id] }),
     ).rejects.toSatisfy((e) => (e as Error).message === 'Channel: YouTube needs a video.');
     await expect(
-      call(
-        router.posts.create,
-        { ...base, id: crypto.randomUUID(), scheduledAt: null, accountIds: [youtube.id] },
-        { context: ctx },
-      ),
+      ctx.api.posts.create({
+        ...base,
+        id: crypto.randomUUID(),
+        scheduledAt: null,
+        accountIds: [youtube.id],
+      }),
     ).rejects.toSatisfy((e) => (e as Error).message.includes('date and time'));
 
     // A draft can be saved with anything selected.
-    const draft = await call(
-      router.posts.create,
-      { id: crypto.randomUUID(), title: 'Later', accountIds: [youtube.id] },
-      { context: ctx },
-    );
+    const draft = await ctx.api.posts.create({
+      id: crypto.randomUUID(),
+      title: 'Later',
+      accountIds: [youtube.id],
+    });
     expect(draft.targets).toHaveLength(1);
   });
 
   it('locks a post once publishing has started', async () => {
     const wordpress = seedAccount(ctx, 'wordpress');
     const id = crypto.randomUUID();
-    await call(
-      router.posts.create,
-      { id, title: 'Go', status: 'scheduled', scheduledAt: new Date(), accountIds: [wordpress.id] },
-      { context: ctx },
-    );
+    await ctx.api.posts.create({
+      id,
+      title: 'Go',
+      status: 'scheduled',
+      scheduledAt: new Date(),
+      accountIds: [wordpress.id],
+    });
     // Simulate the publisher having claimed the target.
     db.update(postTarget).set({ status: 'publishing' }).where(eq(postTarget.postId, id)).run();
     db.update(post).set({ status: 'publishing' }).where(eq(post.id, id)).run();
 
-    await expect(
-      call(router.posts.update, { id, changes: { title: 'Changed' } }, { context: ctx }),
-    ).rejects.toSatisfy(code('CONFLICT'));
-    await expect(call(router.posts.delete, { id }, { context: ctx })).rejects.toSatisfy(
+    await expect(ctx.api.posts.update({ id, changes: { title: 'Changed' } })).rejects.toSatisfy(
       code('CONFLICT'),
     );
+    await expect(ctx.api.posts.delete({ id })).rejects.toSatisfy(code('CONFLICT'));
   });
 
   it('retries failed targets and marks manual ones as posted', async () => {
     const wordpress = seedAccount(ctx, 'wordpress');
     const tiktok = seedAccount(ctx, 'tiktok');
     const id = crypto.randomUUID();
-    const created = await call(
-      router.posts.create,
-      {
-        id,
-        title: 'Go',
-        status: 'scheduled',
-        scheduledAt: new Date(),
-        accountIds: [wordpress.id, tiktok.id],
-      },
-      { context: ctx },
-    );
+    const created = await ctx.api.posts.create({
+      id,
+      title: 'Go',
+      status: 'scheduled',
+      scheduledAt: new Date(),
+      accountIds: [wordpress.id, tiktok.id],
+    });
     const wpTarget = created.targets.find((t) => t.socialAccountId === wordpress.id)!;
     const ttTarget = created.targets.find((t) => t.socialAccountId === tiktok.id)!;
 
-    await expect(
-      call(router.posts.retry, { targetId: wpTarget.id }, { context: ctx }),
-    ).rejects.toSatisfy(code('CONFLICT'));
+    await expect(ctx.api.posts.retry({ targetId: wpTarget.id })).rejects.toSatisfy(
+      code('CONFLICT'),
+    );
 
     db.update(post).set({ status: 'failed' }).where(eq(post.id, id)).run();
     db.update(postTarget)
@@ -189,18 +174,17 @@ describe('posts router', () => {
       .where(eq(postTarget.id, wpTarget.id))
       .run();
 
-    const retried = await call(router.posts.retry, { targetId: wpTarget.id }, { context: ctx });
+    const retried = await ctx.api.posts.retry({ targetId: wpTarget.id });
     expect(retried.status).toBe('publishing');
     expect(retried.targets.find((t) => t.id === wpTarget.id)).toMatchObject({
       status: 'pending',
       lastError: null,
     });
 
-    const posted = await call(
-      router.posts.markPosted,
-      { targetId: ttTarget.id, url: 'https://tiktok.com/@me/video/1' },
-      { context: ctx },
-    );
+    const posted = await ctx.api.posts.markPosted({
+      targetId: ttTarget.id,
+      url: 'https://tiktok.com/@me/video/1',
+    });
     expect(posted.targets.find((t) => t.id === ttTarget.id)).toMatchObject({
       status: 'published',
       externalUrl: 'https://tiktok.com/@me/video/1',
@@ -209,44 +193,32 @@ describe('posts router', () => {
 
   it("hides other users' posts, accounts and media", async () => {
     const id = crypto.randomUUID();
-    await call(router.posts.create, { id, title: 'Mine' }, { context: ctx });
+    await ctx.api.posts.create({ id, title: 'Mine' });
     const mine = seedAccount(ctx, 'wordpress');
-    const file = await call(router.media.upload, { file: video }, { context: ctx });
+    const file = await ctx.api.media.upload({ file: video });
 
     const other = testContext(db, sessionFor(seedUser(db)));
-    expect(await call(router.posts.list, undefined, { context: other })).toHaveLength(0);
+    expect(await other.api.posts.list()).toHaveLength(0);
+    await expect(other.api.posts.update({ id, changes: { title: 'Stolen' } })).rejects.toSatisfy(
+      code('NOT_FOUND'),
+    );
     await expect(
-      call(router.posts.update, { id, changes: { title: 'Stolen' } }, { context: other }),
-    ).rejects.toSatisfy(code('NOT_FOUND'));
-    await expect(
-      call(
-        router.posts.create,
-        { id: crypto.randomUUID(), title: 'x', accountIds: [mine.id] },
-        { context: other },
-      ),
+      other.api.posts.create({ id: crypto.randomUUID(), title: 'x', accountIds: [mine.id] }),
     ).rejects.toSatisfy(code('BAD_REQUEST'));
     await expect(
-      call(
-        router.posts.create,
-        { id: crypto.randomUUID(), title: 'x', mediaIds: [file.id] },
-        { context: other },
-      ),
+      other.api.posts.create({ id: crypto.randomUUID(), title: 'x', mediaIds: [file.id] }),
     ).rejects.toSatisfy(code('BAD_REQUEST'));
   });
 
   it('stores image choices per platform and checks them when scheduling', async () => {
     const youtube = seedAccount(ctx, 'youtube', 'Channel');
-    const clip = await call(router.media.upload, { file: video }, { context: ctx });
-    const gif = await call(
-      router.media.upload,
-      { file: new File(['g'], 't.gif', { type: 'image/gif' }) },
-      { context: ctx },
-    );
-    const png = await call(
-      router.media.upload,
-      { file: new File(['p'], 't.png', { type: 'image/png' }) },
-      { context: ctx },
-    );
+    const clip = await ctx.api.media.upload({ file: video });
+    const gif = await ctx.api.media.upload({
+      file: new File(['g'], 't.gif', { type: 'image/gif' }),
+    });
+    const png = await ctx.api.media.upload({
+      file: new File(['p'], 't.png', { type: 'image/png' }),
+    });
     const base = {
       title: 'Video',
       status: 'scheduled' as const,
@@ -256,93 +228,78 @@ describe('posts router', () => {
     };
 
     await expect(
-      call(
-        router.posts.create,
-        { ...base, id: crypto.randomUUID(), thumbnailMediaId: clip.id },
-        { context: ctx },
-      ),
+      ctx.api.posts.create({ ...base, id: crypto.randomUUID(), thumbnailMediaId: clip.id }),
     ).rejects.toSatisfy((e) => (e as Error).message.includes('must be images'));
     await expect(
-      call(
-        router.posts.create,
-        { ...base, id: crypto.randomUUID(), thumbnailMediaId: gif.id },
-        { context: ctx },
-      ),
+      ctx.api.posts.create({ ...base, id: crypto.randomUUID(), thumbnailMediaId: gif.id }),
     ).rejects.toSatisfy((e) => (e as Error).message.includes('JPEG or PNG'));
 
-    const created = await call(
-      router.posts.create,
-      { ...base, id: crypto.randomUUID(), thumbnailMediaId: png.id, featuredMediaId: gif.id },
-      { context: ctx },
-    );
+    const created = await ctx.api.posts.create({
+      ...base,
+      id: crypto.randomUUID(),
+      thumbnailMediaId: png.id,
+      featuredMediaId: gif.id,
+    });
     expect(created).toMatchObject({ thumbnailMediaId: png.id, featuredMediaId: gif.id });
 
     // In use by a scheduled post: can't delete. Once it's a draft, deleting clears the choice.
-    await expect(call(router.media.delete, { id: png.id }, { context: ctx })).rejects.toSatisfy(
-      code('CONFLICT'),
-    );
-    await call(
-      router.posts.update,
-      { id: created.id, changes: { status: 'draft' } },
-      { context: ctx },
-    );
-    await call(router.media.delete, { id: png.id }, { context: ctx });
-    const [after] = await call(router.posts.list, undefined, { context: ctx });
+    await expect(ctx.api.media.delete({ id: png.id })).rejects.toSatisfy(code('CONFLICT'));
+    await ctx.api.posts.update({ id: created.id, changes: { status: 'draft' } });
+    await ctx.api.media.delete({ id: png.id });
+    const [after] = await ctx.api.posts.list();
     expect(after).toMatchObject({ thumbnailMediaId: null, featuredMediaId: gif.id });
   });
 
   it('checks images in the text and keeps WordPress options', async () => {
-    const png = await call(
-      router.media.upload,
-      { file: new File(['p'], 'p.png', { type: 'image/png' }) },
-      { context: ctx },
-    );
-    const clip = await call(router.media.upload, { file: video }, { context: ctx });
+    const png = await ctx.api.media.upload({
+      file: new File(['p'], 'p.png', { type: 'image/png' }),
+    });
+    const clip = await ctx.api.media.upload({ file: video });
 
     await expect(
-      call(
-        router.posts.create,
-        { id: crypto.randomUUID(), title: 'x', body: `<img src="/files/${clip.id}">` },
-        { context: ctx },
-      ),
+      ctx.api.posts.create({
+        id: crypto.randomUUID(),
+        title: 'x',
+        body: `<img src="/files/${clip.id}">`,
+      }),
     ).rejects.toSatisfy((e) => (e as Error).message.includes('must be images'));
     await expect(
-      call(
-        router.posts.create,
-        { id: crypto.randomUUID(), title: 'x', body: `<img src="/files/${crypto.randomUUID()}">` },
-        { context: ctx },
-      ),
+      ctx.api.posts.create({
+        id: crypto.randomUUID(),
+        title: 'x',
+        body: `<img src="/files/${crypto.randomUUID()}">`,
+      }),
     ).rejects.toSatisfy((e) => (e as Error).message.includes('no longer exists'));
 
-    const created = await call(
-      router.posts.create,
-      {
-        id: crypto.randomUUID(),
-        title: 'Story',
-        body: `<p>Hi</p><img src="/files/${png.id}">`,
-        wordpressOptions: { tags: ['news'], categories: { a: [1, 2] } },
-      },
-      { context: ctx },
-    );
+    const created = await ctx.api.posts.create({
+      id: crypto.randomUUID(),
+      title: 'Story',
+      body: `<p>Hi</p><img src="/files/${png.id}">`,
+      wordpressOptions: { tags: ['news'], categories: { a: [1, 2] } },
+    });
     expect(created.wordpressOptions).toEqual({ tags: ['news'], categories: { a: [1, 2] } });
-    const updated = await call(
-      router.posts.update,
-      { id: created.id, changes: { title: 'Story 2' } },
-      { context: ctx },
-    );
+    const updated = await ctx.api.posts.update({ id: created.id, changes: { title: 'Story 2' } });
     expect(updated.wordpressOptions).toEqual(created.wordpressOptions);
   });
 
-  it('validates input', async () => {
+  it('validates input on the server, and in the client before sending', async () => {
+    const send = (body: object) =>
+      ctx.fetch('/rpc/posts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    for (const body of [
+      { id: crypto.randomUUID(), title: ' ' },
+      { id: crypto.randomUUID(), title: 'x', link: 'javascript:alert(1)' },
+      { id: 'not-a-uuid', title: 'x' },
+    ]) {
+      const res = await send(body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ _tag: 'BadRequest' });
+    }
     await expect(
-      call(router.posts.create, { id: crypto.randomUUID(), title: '' }, { context: ctx }),
-    ).rejects.toSatisfy(code('BAD_REQUEST'));
-    await expect(
-      call(
-        router.posts.create,
-        { id: crypto.randomUUID(), title: 'x', link: 'javascript:alert(1)' },
-        { context: ctx },
-      ),
-    ).rejects.toSatisfy(code('BAD_REQUEST'));
+      ctx.api.posts.create({ id: crypto.randomUUID(), title: 'x', link: 'javascript:alert(1)' }),
+    ).rejects.toMatchObject({ message: expect.stringMatching(/valid http/) });
   });
 });

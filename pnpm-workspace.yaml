@@ -49,10 +49,6 @@ catalog:
   # api
   hono: ^4.13.18
   '@hono/node-server': ^2.1.8
-  '@orpc/server': ^1.16.2
-  '@orpc/client': ^1.16.2
-  '@orpc/tanstack-query': ^1.16.2
-  zod: ^4.6.7
   better-auth: ^1.7.22
   # database
   drizzle-orm: ^0.45.4

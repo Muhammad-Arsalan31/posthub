@@ -1,10 +1,8 @@
 // Platform labels and publishing rules for the composer.
 // The rules mirror packages/api/src/post-rules.ts (the server enforces them); keep them in sync.
-import type { client } from './orpc';
+import type { Platform } from '@posthub/contract';
 
-export type Account = Awaited<ReturnType<typeof client.accounts.list>>[number];
-export type MediaItem = Awaited<ReturnType<typeof client.media.list>>[number];
-export type Platform = Account['platform'];
+export type { Account, MediaItem, Platform } from '@posthub/contract';
 
 export const PLATFORM_LABELS: Record<Platform, string> = {
   youtube: 'YouTube',

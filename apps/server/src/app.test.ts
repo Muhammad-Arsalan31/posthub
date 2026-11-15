@@ -1,7 +1,5 @@
-import { createORPCClient } from '@orpc/client';
-import { RPCLink } from '@orpc/client/fetch';
-import type { RouterClient } from '@orpc/server';
-import { apiLayer, type AppRouter } from '@posthub/api';
+import { apiLayer } from '@posthub/api';
+import { fetchApiClient, type PromiseClient } from '@posthub/contract';
 import { createAuth } from '@posthub/auth';
 import { createTestDb } from '@posthub/db/testing';
 import { createFakeFetch } from '@posthub/integrations/testing';
@@ -43,14 +41,16 @@ function setup() {
   );
   const app = createApp({ auth, services, publicUrl: baseURL, log: false });
 
-  const rpc = (cookie?: string): RouterClient<AppRouter> =>
-    createORPCClient(
-      new RPCLink({
-        url: `${baseURL}/rpc`,
-        headers: cookie ? { cookie } : {},
-        fetch: async (request) => app.fetch(request),
-      }),
-    );
+  /** The API as the web app calls it, optionally signed in with a session cookie. */
+  const rpc = (cookie?: string): PromiseClient =>
+    fetchApiClient({
+      baseUrl: baseURL,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (cookie) request.headers.set('cookie', cookie);
+        return app.fetch(request);
+      },
+    });
 
   return { app, rpc };
 }
@@ -80,7 +80,7 @@ describe('server', () => {
 
   it('blocks protected procedures without a session', async () => {
     const { rpc } = setup();
-    await expect(rpc().posts.list()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(rpc().posts.list()).rejects.toMatchObject({ _tag: 'Unauthorized' });
   });
 
   it('signs up and uses the session cookie for oRPC calls', async () => {

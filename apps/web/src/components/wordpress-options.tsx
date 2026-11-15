@@ -1,6 +1,6 @@
 import { Loader, MultiSelect, Stack, TagsInput, Text } from '@mantine/core';
 import { useQuery } from '@tanstack/react-query';
-import { orpc } from '../lib/orpc';
+import { api } from '../lib/api';
 import type { Account } from '../lib/platforms';
 
 export interface WordPressOptionsValue {
@@ -32,7 +32,7 @@ function CategoryPicker(props: {
   onChange: (ids: number[]) => void;
 }) {
   const categories = useQuery(
-    orpc.accounts.wordpressCategories.queryOptions({
+    api.accounts.wordpressCategories.queryOptions({
       input: { accountId: props.account.id },
       staleTime: 5 * 60_000,
     }),

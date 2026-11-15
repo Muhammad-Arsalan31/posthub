@@ -3,19 +3,20 @@ import { stat } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import { Readable } from 'node:stream';
 import { serveStatic } from '@hono/node-server/serve-static';
-import { onError, ORPCError } from '@orpc/server';
-import { RPCHandler } from '@orpc/server/fetch';
 import {
+  apiWebHandler,
   beginOAuth,
   completeOAuth,
   ConnectionError,
-  rpcContext,
-  router,
+  Database,
+  MediaDir,
+  ProviderApps,
+  Sessions,
   type ApiServices,
 } from '@posthub/api';
 import type { Auth } from '@posthub/auth';
 import { PlatformError } from '@posthub/integrations';
-import type { Context } from 'effect';
+import { Context, Effect } from 'effect';
 import { Hono } from 'hono';
 import { logger } from 'hono/logger';
 import { version } from '../../../package.json';
@@ -38,9 +39,13 @@ const userMessage = (error: unknown) =>
 
 export function createApp({ auth, services, publicUrl = env.publicUrl, log = true }: AppDeps) {
   const app = new Hono();
-  // A request's context: the session plus every API service (and `run` for Effect code).
-  const contextFor = (session: Awaited<ReturnType<typeof getSession>>) =>
-    rpcContext(services, session);
+  const db = Context.get(services, Database);
+  const mediaDir = Context.get(services, MediaDir);
+  const providerApps = Context.get(services, ProviderApps);
+  /** Runs API Effect code with the server's services. */
+  const run = <A, E>(effect: Effect.Effect<A, E, ApiServices>) =>
+    Effect.runPromise(Effect.provideContext(effect, services));
+  const integrations = () => Effect.runSync(providerApps.current);
   if (log) app.use(logger());
 
   const getSession = (headers: Headers) => auth.api.getSession({ headers });
@@ -59,11 +64,10 @@ export function createApp({ auth, services, publicUrl = env.publicUrl, log = tru
     if (!session) return c.redirect(`${publicUrl}/login`);
     const provider = c.req.param('provider');
     try {
-      const ctx = contextFor(session);
       return c.redirect(
-        await ctx.run(
+        await run(
           beginOAuth({
-            integrations: ctx.integrations,
+            integrations: integrations(),
             userId: session.user.id,
             providerId: provider,
             redirectUri: redirectUri(provider),
@@ -86,10 +90,9 @@ export function createApp({ auth, services, publicUrl = env.publicUrl, log = tru
       );
     }
     try {
-      const ctx = contextFor(session);
-      const accounts = await ctx.run(
+      const accounts = await run(
         completeOAuth({
-          integrations: ctx.integrations,
+          integrations: integrations(),
           userId: session.user.id,
           providerId: provider,
           state,
@@ -111,7 +114,6 @@ export function createApp({ auth, services, publicUrl = env.publicUrl, log = tru
   app.get('/files/:id', async (c) => {
     const session = await getSession(c.req.raw.headers);
     if (!session) return c.body(null, 401);
-    const { db, mediaDir } = contextFor(session);
     const asset = await db.query.mediaAsset.findFirst({
       where: (m, { and, eq }) => and(eq(m.id, c.req.param('id')), eq(m.userId, session.user.id)),
     });
@@ -141,26 +143,9 @@ export function createApp({ auth, services, publicUrl = env.publicUrl, log = tru
     return c.body(body, range && headers['content-range'] ? 206 : 200, headers);
   });
 
-  // oRPC: typed procedures shared with the web app.
-  const rpcHandler = new RPCHandler(router, {
-    interceptors: [
-      onError((error) => {
-        // Expected client errors (401, 404, validation) are not worth logging.
-        if (error instanceof ORPCError && error.status < 500) return;
-        console.error('[rpc]', error);
-      }),
-    ],
-  });
-
-  app.use('/rpc/*', async (c, next) => {
-    const session = await getSession(c.req.raw.headers);
-    const { matched, response } = await rpcHandler.handle(c.req.raw, {
-      prefix: '/rpc',
-      context: contextFor(session),
-    });
-    if (matched) return c.newResponse(response.body, response);
-    await next();
-  });
+  // The typed HTTP API shared with the web app (@posthub/contract).
+  const api = apiWebHandler(services, Sessions.layer(auth));
+  app.all('/rpc/*', (c) => api.handler(c.req.raw));
 
   // Production: serve the built PWA from the same origin.
   if (env.isProduction && existsSync(env.webDist)) {

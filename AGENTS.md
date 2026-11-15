@@ -10,7 +10,7 @@ system, and must publish scheduled posts reliably even when no browser window is
 - **Tooling:** Vite+ (`vp`) does dev, build, pack, lint (Oxlint), format (Oxfmt), type check
   (TypeScript 7 via tsgolint) and test (Vitest 5). Root `vite.config.ts` holds the shared lint/fmt config.
 - **Web (`apps/web`):** React 19, TanStack Router (file routes), TanStack Query, TanStack DB, Mantine 9, PWA (vite-plugin-pwa).
-- **Server (`apps/server`):** Hono on `@hono/node-server`, oRPC, better-auth.
+- **Server (`apps/server`):** Hono on `@hono/node-server`, Effect HttpApi (`effect/http-api`), better-auth.
 - **Data:** Drizzle ORM + SQLite (better-sqlite3, native module).
 - **Effect:** Effect v4 (`effect` 4.1.x) for backend logic, being adopted package by package (connectors first).
 
@@ -19,10 +19,10 @@ system, and must publish scheduled posts reliably even when no browser window is
 ```
 apps/web/            React PWA
   src/routes/        file-based routes; routeTree.gen.ts is GENERATED, never edit it
-  src/collections/   TanStack DB collections (oRPC-backed)
+  src/collections/   TanStack DB collections (backed by the API client)
   src/components/    post-editor (composer), media (dropzone, library, thumbnails)
   src/lib/platforms.ts  platform labels + publishing rules (mirrors api src/post-rules.ts)
-  src/lib/           orpc client, auth client, query client
+  src/lib/api.ts     API client (`client`) + TanStack Query helpers (`api`); lib/ also has the auth and query clients
   src/providers.tsx  MantineProviders: theme, package CSS, Dates/Modals/Notifications (app + tests)
   src/test/          test setup + renderRoute() helper
 apps/server/         Hono server
@@ -32,12 +32,14 @@ apps/server/         Hono server
 packages/db/         Drizzle schema (src/schema), migrations (drizzle/), createDb, runMigrations
   src/testing.ts     createTestDb(), seedUser() for tests (@posthub/db/testing)
 packages/auth/       createAuth(): better-auth config
-packages/api/        oRPC router (src/index.ts), procedures (src/procedures.ts), routers/
+packages/contract/   web-safe API contract: Effect Schema models, errors, HttpApi groups (src/api.ts),
+                     Promise facade + fetchApiClient() used by the web app and tests
+packages/api/        HttpApi handlers (routers/<area>.ts, assembled in src/routes.ts), services, publisher
   src/services.ts    Database, MediaDir services; layer.ts has apiLayer() (adds Vault, ProviderApps) and rpcContext()
   src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows, as Effects)
   src/publisher.ts   Publisher service + publisherWorker layer (background publishing, run by the server)
   src/post-rules.ts  what each platform can publish; checked before a post is scheduled
-  src/testing.ts     testContext(), sessionFor() for procedure tests (@posthub/api/testing)
+  src/testing.ts     testContext(), sessionFor() for handler tests (@posthub/api/testing)
 packages/integrations/  platform connectors: no DB access, injectable fetch
   src/providers/     google (YouTube), meta (Facebook + Instagram), linkedin, wordpress
   src/registry.ts    createIntegrations(config): enabled providers + adapters, PROVIDERS metadata
@@ -74,25 +76,29 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 - In dev, the browser only talks to Vite (:5173), which proxies `/api`, `/rpc` and `/connect` to the server
   (127.0.0.1:4100). Everything is same-origin, so auth cookies need no CORS setup.
 - In production, the server serves `apps/web/dist` itself, also same-origin.
-- `/api/auth/*` is better-auth. `/rpc/*` is oRPC, and the session is resolved per request and put in the context.
-- `/files/:id` streams an uploaded media file to its owner (Range supported). Uploads go through oRPC
+- `/api/auth/*` is better-auth. `/rpc/*` is the HttpApi from `@posthub/contract`; its `Authorization` middleware
+  resolves the session cookie and provides `CurrentUser`.
+- `/files/:id` streams an uploaded media file to its owner (Range supported). Uploads go through the API
   (`media.upload` takes a `File`) and land in the media folder.
 - `/connect/:provider/start` and `/connect/:provider/callback` are the platform OAuth redirects (plain Hono
   routes, because they are browser navigations). They finish by redirecting to `/accounts?connected=N` or `?error=...`.
 
 ## Conventions
 
-### API (oRPC)
+### API (Effect HttpApi)
 
-- Add procedures in `packages/api/src/routers/<area>.ts` and mount them in `router` in `src/index.ts`.
+- Define endpoints in `packages/contract/src/api.ts` (schemas in `domain.ts`), then implement them in
+  `packages/api/src/routers/<area>.ts` with `HttpApiBuilder.group` and add the group to `ApiRoutes` (`src/routes.ts`).
+- Validate with Effect Schema in the contract. Invalid input becomes a `BadRequest` with the schema's message
+  (`InputValidation` middleware), and the typed client also refuses to send it.
 - Backend logic is Effect code over the services in `apiLayer` (`Database`, `Vault`, `MediaDir`, `ProviderApps`).
-  oRPC handlers run it with `await context.run(effect)`; it rejects with the Effect's typed error.
-- Use `protectedProcedure` for anything user-scoped; it provides `context.user` and a non-null
-  `context.session`. **Always filter by `context.user.id`** (owner scoping is tested).
-- Validate input with zod (v4). Throw `ORPCError('NOT_FOUND' | 'UNAUTHORIZED' | ...)` for expected errors.
-- The web app imports **only types** from `@posthub/api` (`AppRouter`). Never import server code into the web bundle.
-- Middleware gotcha: context injected via `next({ context })` must not redefine an existing context
-  key with an incompatible type. Doing so silently breaks type inference for every downstream procedure _and_ the web client.
+  Yield services when the group is built, and `CurrentUser` inside handlers.
+- Groups behind `.middleware(Authorization)` get `CurrentUser`. **Always filter by `CurrentUser.id`** (owner scoping is tested).
+- Fail with the contract's errors (`NotFound`, `BadRequest`, `Conflict`, `BadGateway`; helpers in `http-support.ts`).
+  Inside a Drizzle transaction, throw them and wrap the work in `trySync`, so the transaction rolls back.
+- `@posthub/contract` is shipped to the browser: it may depend only on `effect`. Never import server code into it or the web app.
+- Strings the server trims (titles, credentials) are validated as non-blank in the contract and trimmed in the handler:
+  `Schema.Trim` would make the client reject untrimmed input.
 
 ### Database (Drizzle + SQLite)
 
@@ -100,15 +106,16 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   sync with better-auth), and `app.ts` holds the domain tables.
 - After changing the schema, run `pnpm db:generate` and commit the SQL in `packages/db/drizzle/`.
   Never hand-edit applied migrations. The server applies migrations on every start.
-- Timestamps are `integer(..., { mode: 'timestamp_ms' })` and surface as `Date`. oRPC serializes `Date` natively.
+- Timestamps are `integer(..., { mode: 'timestamp_ms' })` and surface as `Date`. The API encodes `Date` as ISO strings (`Schema.Date`).
 - IDs are text. Posts use client-generated UUIDs so TanStack DB can insert optimistically.
 - DB access happens only in the server/packages, never in the web app.
 
 ### Web
 
 - Read data with TanStack DB `useLiveQuery` over a collection. Mutate with `collection.insert/update/delete`;
-  the collection's `onInsert/onUpdate/onDelete` handlers persist through oRPC.
-- For non-collection data, use `orpc.<path>.queryOptions()` with TanStack Query.
+  the collection's `onInsert/onUpdate/onDelete` handlers persist through the API client.
+- For non-collection data, use `api.<group>.<endpoint>.queryOptions()` / `.mutationOptions()` from `src/lib/api.ts`,
+  and `api.<group>.key()` to invalidate. Errors are the contract's typed errors, with a user-facing `message`.
 - Signed-in pages live under `src/routes/_app/` (the guard is in `_app.tsx`). Use Mantine components; don't add CSS frameworks.
 - Installed Mantine extensions: form, dates (+dayjs), charts (+recharts), notifications, modals, tiptap
   (+StarterKit, Link), dropzone, emoji. Their CSS and providers are already wired in `src/providers.tsx`.
@@ -143,7 +150,8 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 - Import test APIs from `vite-plus/test` (not `vitest`). Tests of Effect code use `@effect/vitest` instead
   (`it.effect`, `Effect.flip` for expected failures, `TestClock` for time); it shares Vite+'s vitest.
 - Backend tests: use `createTestDb()` (in-memory SQLite, real migrations) and `seedUser()`. Call
-  procedures with `call(router.x.y, input, { context })`, or go through HTTP with `createApp({ db, auth, log: false })`.
+  handlers through `testContext(db, session).api.<group>.<endpoint>(input)` (the full HTTP pipeline, signed in as
+  `session`; `ctx.fetch` sends raw requests), or go through the server with `createApp({ auth, services, log: false })`.
 - Web tests: jsdom + Testing Library. Use `renderRoute('/path')` and `vi.mock('../lib/auth-client')` for auth.
 
 ### Dependencies

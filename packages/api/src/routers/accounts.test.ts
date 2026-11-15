@@ -1,12 +1,9 @@
-import { call, ORPCError } from '@orpc/server';
 import { oauthState, socialAccount, type Db } from '@posthub/db';
 import { createTestDb, seedUser } from '@posthub/db/testing';
 import { createFakeFetch } from '@posthub/integrations/testing';
 import { beforeEach, describe, expect, it } from 'vite-plus/test';
 import { beginOAuth, completeOAuth } from '../connections';
-import { router } from '../index';
-import type { Context } from '../procedures';
-import { sessionFor, testContext } from '../testing';
+import { sessionFor, testContext, type TestContext } from '../testing';
 import { Effect } from 'effect';
 
 const google = { google: { clientId: 'gid', clientSecret: 'gs' } };
@@ -24,7 +21,7 @@ const googleFetch = () =>
 
 describe('OAuth connect flow', () => {
   let db: Db;
-  let ctx: Context;
+  let ctx: TestContext;
   let userId: string;
 
   beforeEach(() => {
@@ -126,22 +123,22 @@ describe('accounts router', () => {
       }),
     );
 
-    const accounts = await call(router.accounts.list, undefined, { context: ctx });
+    const accounts = await ctx.api.accounts.list();
     expect(accounts).toHaveLength(1);
     expect(accounts[0]).not.toHaveProperty('credentials');
 
     const stranger = testContext(db, sessionFor(seedUser(db)));
-    await call(router.accounts.disconnect, { id: accounts[0]!.id }, { context: stranger });
-    expect(await call(router.accounts.list, undefined, { context: ctx })).toHaveLength(1);
+    await stranger.api.accounts.disconnect({ id: accounts[0]!.id });
+    expect(await ctx.api.accounts.list()).toHaveLength(1);
 
-    await call(router.accounts.disconnect, { id: accounts[0]!.id }, { context: ctx });
-    expect(await call(router.accounts.list, undefined, { context: ctx })).toHaveLength(0);
+    await ctx.api.accounts.disconnect({ id: accounts[0]!.id });
+    expect(await ctx.api.accounts.list()).toHaveLength(0);
   });
 
   it('reports which providers are configured', async () => {
     const db = createTestDb();
     const ctx = testContext(db, sessionFor(seedUser(db)), { config: google });
-    const providers = await call(router.accounts.providers, undefined, { context: ctx });
+    const providers = await ctx.api.accounts.providers();
     expect(Object.fromEntries(providers.map((p) => [p.id, p.configured]))).toEqual({
       google: true,
       meta: false,
@@ -160,8 +157,8 @@ describe('accounts router', () => {
     const ctx = testContext(db, sessionFor(owner), { deps: fake });
     const input = { siteUrl: 'https://wp.example', username: 'u', appPassword: 'p' };
 
-    await expect(call(router.accounts.connectWordPress, input, { context: ctx })).rejects.toSatisfy(
-      (e) => e instanceof ORPCError && e.code === 'BAD_REQUEST' && /rejected/.test(e.message),
+    await expect(ctx.api.accounts.connectWordPress(input)).rejects.toSatisfy(
+      (e) => e._tag === 'BadRequest' && /rejected/.test(e.message),
     );
     expect(db.select().from(socialAccount).all()).toHaveLength(0);
   });
