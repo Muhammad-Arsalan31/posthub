@@ -149,7 +149,9 @@ function writePost(
     link: input.link,
     featuredMediaId: input.featuredMediaId,
     thumbnailMediaId: input.thumbnailMediaId,
-    wordpressOptions: input.wordpressOptions,
+    wordpressOptions: input.wordpressOptions
+      ? { ...input.wordpressOptions, tags: input.wordpressOptions.tags.map((tag) => tag.trim()) }
+      : null,
     status: input.status,
     scheduledAt: input.scheduledAt,
   };
@@ -263,33 +265,35 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
         ),
 
       update: ({ payload: input }) =>
-        Effect.gen(function* () {
-          const user = yield* CurrentUser;
-          const current = yield* loadPost(user.id, input.id);
-          if (!isEditable(current.status)) {
-            return yield* conflict(
-              'This post has already started publishing and can no longer be edited.',
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const current = yield* loadPost(user.id, input.id);
+            if (!isEditable(current.status)) {
+              return yield* conflict(
+                'This post has already started publishing and can no longer be edited.',
+              );
+            }
+            return yield* savePost(
+              user.id,
+              input.id,
+              {
+                title: current.title,
+                body: current.body,
+                link: current.link,
+                status: current.status as PostInput['status'],
+                scheduledAt: current.scheduledAt,
+                accountIds: current.accountIds,
+                mediaIds: current.mediaIds,
+                featuredMediaId: current.featuredMediaId,
+                thumbnailMediaId: current.thumbnailMediaId,
+                wordpressOptions: current.wordpressOptions,
+                ...input.changes,
+              },
+              false,
             );
-          }
-          return yield* savePost(
-            user.id,
-            input.id,
-            {
-              title: current.title,
-              body: current.body,
-              link: current.link,
-              status: current.status as PostInput['status'],
-              scheduledAt: current.scheduledAt,
-              accountIds: current.accountIds,
-              mediaIds: current.mediaIds,
-              featuredMediaId: current.featuredMediaId,
-              thumbnailMediaId: current.thumbnailMediaId,
-              wordpressOptions: current.wordpressOptions,
-              ...input.changes,
-            },
-            false,
-          );
-        }),
+          }),
+        ),
 
       delete: ({ payload: input }) =>
         Effect.gen(function* () {
@@ -325,33 +329,33 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
         }),
 
       retry: ({ payload: input }) =>
-        Effect.gen(function* () {
-          const user = yield* CurrentUser;
-          const { target } = yield* ownTarget(user.id, input.targetId);
-          if (target.status !== 'failed')
-            return yield* conflict('Only failed posts can be retried.');
-          yield* transaction(
-            query((db) => {
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const { target } = yield* ownTarget(user.id, input.targetId);
+            if (target.status !== 'failed')
+              return yield* conflict('Only failed posts can be retried.');
+            yield* query((db) => {
               db.update(postTarget)
                 .set({ status: 'pending', nextAttemptAt: null, lastError: null })
                 .where(eq(postTarget.id, target.id))
                 .run();
               refreshPostStatus(db, target.postId);
-            }),
-          );
-          return yield* loadPost(user.id, target.postId);
-        }),
+            });
+            return yield* loadPost(user.id, target.postId);
+          }),
+        ),
 
       markPosted: ({ payload: input }) =>
-        Effect.gen(function* () {
-          const user = yield* CurrentUser;
-          const publishedAt = new Date(yield* Clock.currentTimeMillis);
-          const { target, postStatus } = yield* ownTarget(user.id, input.targetId);
-          if (target.status !== 'manual') {
-            return yield* conflict('This target is published automatically.');
-          }
-          yield* transaction(
-            query((db) => {
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const publishedAt = new Date(yield* Clock.currentTimeMillis);
+            const { target, postStatus } = yield* ownTarget(user.id, input.targetId);
+            if (target.status !== 'manual') {
+              return yield* conflict('This target is published automatically.');
+            }
+            yield* query((db) => {
               db.update(postTarget)
                 .set({ status: 'published', externalUrl: input.url ?? null, publishedAt })
                 .where(eq(postTarget.id, target.id))
@@ -359,10 +363,10 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
               if (postStatus !== 'draft' && postStatus !== 'scheduled') {
                 refreshPostStatus(db, target.postId);
               }
-            }),
-          );
-          return yield* loadPost(user.id, target.postId);
-        }),
+            });
+            return yield* loadPost(user.id, target.postId);
+          }),
+        ),
     });
   }),
 );

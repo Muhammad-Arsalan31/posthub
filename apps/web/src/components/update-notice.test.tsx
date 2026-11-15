@@ -17,7 +17,7 @@ describe('version and release notes', () => {
   beforeEach(() => localStorage.clear());
 
   it('links the sidebar version to its GitHub release', async () => {
-    renderRoute('/media');
+    await renderRoute('/media');
     const link = await screen.findByRole('link', { name: `v${APP_VERSION} · Release notes` });
     expect(link.getAttribute('href')).toBe(RELEASE_NOTES_URL);
     expect(RELEASE_NOTES_URL).toMatch(/^https:\/\/github\.com\/.+\/releases\/tag\/v\d+\.\d+\.\d+$/);
@@ -25,7 +25,7 @@ describe('version and release notes', () => {
 
   it('announces an update once', async () => {
     localStorage.setItem('posthub:last-seen-version', '0.0.0-old');
-    renderRoute('/media');
+    await renderRoute('/media');
     expect(await screen.findByText(`PostHub updated to v${APP_VERSION}`)).toBeTruthy();
     expect(localStorage.getItem('posthub:last-seen-version')).toBe(APP_VERSION);
   });

@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@effect/vitest';
-import { providerApp, type Db } from '@posthub/db';
+import { createAuth } from '@posthub/auth';
+import { providerApp, user, type Db } from '@posthub/db';
 import { createTestDb } from '@posthub/db/testing';
 import { Cause, Effect, Exit, Schema } from 'effect';
 import { makeDatabase } from './services';
@@ -18,6 +19,46 @@ const insert = (db: Db, provider: string) =>
   db.insert(providerApp).values({ provider, config: 'x' }).run();
 
 describe('Database', () => {
+  it('does not roll back a successful auth signup with an unrelated transaction', async () => {
+    const db = createTestDb();
+    const database = makeDatabase(db);
+    const auth = createAuth({
+      db,
+      baseURL: 'http://localhost:4100',
+      secret: 'test-secret-test-secret-test-secret!',
+    });
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const transaction = Effect.runPromise(
+      database
+        .transaction(
+          Effect.gen(function* () {
+            yield* database.use((d) => insert(d, 'rolled-back'));
+            yield* Effect.promise(() => gate);
+            return yield* new Oops();
+          }),
+        )
+        .pipe(Effect.exit),
+    );
+
+    try {
+      const signup = await auth.api.signUpEmail({
+        body: { email: 'owner@posthub.test', password: 'password123', name: 'Owner' },
+      });
+      release();
+      expect(Exit.isFailure(await transaction)).toBe(true);
+      expect(db.select().from(user).all()).toMatchObject([{ id: signup.user.id }]);
+      expect(providers(db)).toEqual([]);
+      expect(db.$client.inTransaction).toBe(false);
+    } finally {
+      release();
+      await transaction;
+      db.$client.close();
+    }
+  });
+
   it.effect('commits a transaction that succeeds', () =>
     Effect.gen(function* () {
       const db = createTestDb();

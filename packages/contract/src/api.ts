@@ -19,7 +19,6 @@ import {
   Provider,
   User,
   WordPressCategory,
-  WordPressOptions,
 } from './domain';
 import { ApiErrors, BadRequest, Unauthorized } from './errors';
 
@@ -57,6 +56,27 @@ const HttpUrl = bounded(2000).check(
   Schema.isPattern(/^https?:\/\/[^\s/$.?#][^\s]*$/i, { message: 'Enter a valid http(s) URL.' }),
 );
 
+/** Input constraints stay separate from stored options so older posts remain readable. */
+const WordPressOptionsInput = Schema.Struct({
+  tags: Schema.mutable(
+    Schema.Array(
+      Schema.String.check(
+        Schema.makeFilter((tag) => tag.trim().length > 0 && tag.trim().length <= 100, {
+          message: 'Tags must contain between 1 and 100 characters.',
+        }),
+      ),
+    ).check(Schema.isMaxLength(50)),
+  ),
+  categories: Schema.Record(
+    Schema.String,
+    Schema.mutable(
+      Schema.Array(Schema.Number.check(Schema.isInt(), Schema.isGreaterThan(0))).check(
+        Schema.isMaxLength(100),
+      ),
+    ),
+  ),
+});
+
 /** Fields the composer can set. Targets and timestamps are server-owned. */
 export const PostFields = Schema.Struct({
   title: required(200),
@@ -69,7 +89,7 @@ export const PostFields = Schema.Struct({
   mediaIds: Schema.mutable(Schema.Array(Schema.String).check(Schema.isMaxLength(20))),
   featuredMediaId: Schema.NullOr(Schema.String),
   thumbnailMediaId: Schema.NullOr(Schema.String),
-  wordpressOptions: Schema.NullOr(WordPressOptions),
+  wordpressOptions: Schema.NullOr(WordPressOptionsInput),
 });
 export type PostFields = typeof PostFields.Type;
 

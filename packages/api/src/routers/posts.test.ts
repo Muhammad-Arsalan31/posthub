@@ -1,8 +1,11 @@
 import { post, postTarget, socialAccount, type Db, type Platform } from '@posthub/db';
+import type { WordPressOptions } from '@posthub/contract';
 import { createTestDb, seedUser } from '@posthub/db/testing';
 import { eq } from 'drizzle-orm';
+import { Context, Effect } from 'effect';
 import { beforeEach, describe, expect, it } from 'vite-plus/test';
-import { sessionFor, testContext, type TestContext } from '../testing';
+import { Database } from '../services';
+import { contextFor, sessionFor, testContext, type TestContext } from '../testing';
 
 const TAGS: Record<string, string> = {
   BAD_REQUEST: 'BadRequest',
@@ -29,6 +32,33 @@ function seedAccount(ctx: TestContext, platform: Platform, displayName: string =
 }
 
 const video = new File(['v'], 'clip.mp4', { type: 'video/mp4' });
+
+/** Let the publisher win just before the handler acquires its transaction. */
+async function claimBeforeTransaction(ctx: TestContext, postId: string) {
+  const services = await ctx.run(Effect.context());
+  const database = Context.get(services, Database);
+  let claimed = false;
+  return contextFor(
+    Context.add(services, Database, {
+      ...database,
+      transaction: (effect) =>
+        Effect.suspend(() => {
+          if (!claimed) {
+            claimed = true;
+            ctx.db.update(post).set({ status: 'publishing' }).where(eq(post.id, postId)).run();
+            ctx.db
+              .update(postTarget)
+              .set({ status: 'publishing', attempts: 1 })
+              .where(eq(postTarget.postId, postId))
+              .run();
+          }
+          return database.transaction(effect);
+        }),
+    }),
+    ctx.session,
+    ctx.db,
+  );
+}
 
 describe('posts router', () => {
   let db: Db;
@@ -189,6 +219,71 @@ describe('posts router', () => {
       status: 'published',
       externalUrl: 'https://tiktok.com/@me/video/1',
     });
+  });
+
+  it('rejects an edit when the publisher claims the post before the save transaction', async () => {
+    const account = seedAccount(ctx, 'wordpress');
+    const created = await ctx.api.posts.create({
+      id: crypto.randomUUID(),
+      title: 'Original',
+      status: 'scheduled',
+      scheduledAt: new Date(),
+      accountIds: [account.id],
+    });
+    const racing = await claimBeforeTransaction(ctx, created.id);
+    await expect(
+      racing.api.posts.update({ id: created.id, changes: { title: 'Changed' } }),
+    ).rejects.toSatisfy(code('CONFLICT'));
+    expect(db.select().from(post).where(eq(post.id, created.id)).get()).toMatchObject({
+      title: 'Original',
+      status: 'publishing',
+    });
+  });
+
+  it('does not requeue a target claimed after another retry', async () => {
+    const account = seedAccount(ctx, 'wordpress');
+    const created = await ctx.api.posts.create({
+      id: crypto.randomUUID(),
+      title: 'Retry',
+      accountIds: [account.id],
+    });
+    db.update(post).set({ status: 'failed' }).where(eq(post.id, created.id)).run();
+    db.update(postTarget).set({ status: 'failed' }).where(eq(postTarget.postId, created.id)).run();
+    const racing = await claimBeforeTransaction(ctx, created.id);
+    await expect(racing.api.posts.retry({ targetId: created.targets[0]!.id })).rejects.toSatisfy(
+      code('CONFLICT'),
+    );
+    expect(
+      db.select().from(postTarget).where(eq(postTarget.postId, created.id)).get(),
+    ).toMatchObject({ status: 'publishing', attempts: 1 });
+  });
+
+  it('validates WordPress options in both the client and raw HTTP requests', async () => {
+    const invalidOptions: WordPressOptions[] = [
+      { tags: [' '], categories: {} },
+      { tags: ['x'.repeat(101)], categories: {} },
+      { tags: Array.from({ length: 51 }, () => 'tag'), categories: {} },
+      { tags: [], categories: { site: [-1] } },
+      { tags: [], categories: { site: [1.5] } },
+      { tags: [], categories: { site: Array.from({ length: 101 }, () => 1) } },
+    ];
+    for (const wordpressOptions of invalidOptions) {
+      const input = { id: crypto.randomUUID(), title: 'Invalid options', wordpressOptions };
+      await expect(ctx.api.posts.create(input)).rejects.toBeInstanceOf(Error);
+      const response = await ctx.fetch('/rpc/posts', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(input),
+      });
+      expect(response.status).toBe(400);
+    }
+    expect(await ctx.api.posts.list()).toEqual([]);
+    const created = await ctx.api.posts.create({
+      id: crypto.randomUUID(),
+      title: 'Tags',
+      wordpressOptions: { tags: ['  news  '], categories: { site: [1, 2] } },
+    });
+    expect(created.wordpressOptions).toEqual({ tags: ['news'], categories: { site: [1, 2] } });
   });
 
   it("hides other users' posts, accounts and media", async () => {
