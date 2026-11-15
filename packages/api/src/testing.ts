@@ -11,7 +11,7 @@ import { Sessions } from './http-support';
 import { apiLayer, type ApiServices } from './layer';
 import { ProviderApps, type ProviderAppsService } from './provider-apps';
 import { apiWebHandler } from './routes';
-import { Database, MediaDir } from './services';
+import { MediaDir } from './services';
 
 export const TEST_ENCRYPTION_KEY = 'test-encryption-key-test-encryption-key';
 
@@ -69,13 +69,14 @@ export function testContext(
       ),
     ),
   );
-  return contextFor(services, session);
+  return contextFor(services, session, db);
 }
 
 /** Another caller (e.g. a different user) against the same services. */
 export function contextFor(
   services: Context.Context<ApiServices>,
   session: AuthSession | null,
+  db: Db,
 ): TestContext {
   const sessions = Layer.succeed(Sessions, { get: () => Effect.succeed(session) });
   const { handler } = apiWebHandler(services, sessions);
@@ -87,7 +88,7 @@ export function contextFor(
     }),
     fetch: (path, init) => handler(new Request(new URL(path, 'http://posthub.test'), init)),
     session,
-    db: Context.get(services, Database),
+    db,
     vault: Context.get(services, Vault),
     mediaDir: Context.get(services, MediaDir),
     providerApps,

@@ -11,7 +11,7 @@ import {
 } from '@posthub/integrations';
 import { eq } from 'drizzle-orm';
 import { Clock, Context, Effect, Layer, Option, Ref, Schema } from 'effect';
-import { Database } from './services';
+import { Database, type DatabaseError } from './services';
 
 export const OAUTH_PROVIDER_IDS = ['google', 'meta', 'linkedin'] as const;
 
@@ -51,9 +51,9 @@ export interface ProviderAppsService {
   save(
     provider: OAuthProviderId,
     input: AppCredentialsInput,
-  ): Effect.Effect<void, ProviderAppError>;
+  ): Effect.Effect<void, ProviderAppError | DatabaseError>;
   /** Deletes stored credentials; the provider falls back to .env values, if any. */
-  remove(provider: OAuthProviderId): Effect.Effect<void>;
+  remove(provider: OAuthProviderId): Effect.Effect<void, DatabaseError>;
 }
 
 export interface ProviderAppsOptions {
@@ -72,12 +72,13 @@ export const makeProviderApps = Effect.fnUntraced(function* ({
   envConfig = {},
   deps,
 }: ProviderAppsOptions = {}) {
-  const db = yield* Database;
+  const database = yield* Database;
   const vault = yield* Vault;
 
   const load = Effect.gen(function* () {
     const stored: Record<string, object> = {};
-    for (const row of db.select().from(providerApp).all()) {
+    const rows = yield* database.use((db) => db.select().from(providerApp).all());
+    for (const row of rows) {
       const config = yield* vault.decrypt<object>(row.config).pipe(
         Effect.map(Option.some),
         Effect.catchTag('VaultError', () =>
@@ -131,16 +132,21 @@ export const makeProviderApps = Effect.fnUntraced(function* ({
       }
       const config = vault.encrypt(toProviderConfig(provider, clientId, clientSecret));
       const updatedAt = new Date(yield* Clock.currentTimeMillis);
-      db.insert(providerApp)
-        .values({ provider, config })
-        .onConflictDoUpdate({ target: providerApp.provider, set: { config, updatedAt } })
-        .run();
+      yield* database.use((db) =>
+        db
+          .insert(providerApp)
+          .values({ provider, config })
+          .onConflictDoUpdate({ target: providerApp.provider, set: { config, updatedAt } })
+          .run(),
+      );
       yield* rebuild;
     }),
 
     remove: (provider) =>
       Effect.andThen(
-        Effect.sync(() => db.delete(providerApp).where(eq(providerApp.provider, provider)).run()),
+        database.use((db) =>
+          db.delete(providerApp).where(eq(providerApp.provider, provider)).run(),
+        ),
         rebuild,
       ),
   });

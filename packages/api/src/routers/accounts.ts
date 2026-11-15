@@ -5,7 +5,7 @@ import { and, asc, eq } from 'drizzle-orm';
 import { Effect } from 'effect';
 import { HttpApiBuilder } from 'effect/http-api';
 import { saveAccounts } from '../connections';
-import { notFound, trySync } from '../http-support';
+import { handlerDatabase, notFound } from '../http-support';
 import { ProviderApps } from '../provider-apps';
 import { Database } from '../services';
 
@@ -22,7 +22,7 @@ const publicColumns = {
 
 export const AccountsHandlers = HttpApiBuilder.group(Api, 'accounts', (handlers) =>
   Effect.gen(function* () {
-    const db = yield* Database;
+    const { query } = handlerDatabase(yield* Database);
     const vault = yield* Vault;
     const providerApps = yield* ProviderApps;
     const services = yield* Effect.context<Database | Vault>();
@@ -30,7 +30,7 @@ export const AccountsHandlers = HttpApiBuilder.group(Api, 'accounts', (handlers)
     return handlers.handleAll({
       list: () =>
         Effect.flatMap(CurrentUser, (user) =>
-          trySync((): Account[] =>
+          query((db): Account[] =>
             db
               .select(publicColumns)
               .from(socialAccount)
@@ -63,24 +63,29 @@ export const AccountsHandlers = HttpApiBuilder.group(Api, 'accounts', (handlers)
                   : new BadGateway({ message: `Could not reach the site: ${error.message}` }),
               ),
             );
-          yield* saveAccounts(user.id, [account]).pipe(Effect.provideContext(services));
+          yield* saveAccounts(user.id, [account]).pipe(
+            Effect.provideContext(services),
+            Effect.orDie,
+          );
           return { displayName: account.displayName };
         }),
 
       wordpressCategories: ({ payload }) =>
         Effect.gen(function* () {
           const user = yield* CurrentUser;
-          const account = db
-            .select({ credentials: socialAccount.credentials })
-            .from(socialAccount)
-            .where(
-              and(
-                eq(socialAccount.id, payload.accountId),
-                eq(socialAccount.userId, user.id),
-                eq(socialAccount.platform, 'wordpress'),
-              ),
-            )
-            .get();
+          const account = yield* query((db) =>
+            db
+              .select({ credentials: socialAccount.credentials })
+              .from(socialAccount)
+              .where(
+                and(
+                  eq(socialAccount.id, payload.accountId),
+                  eq(socialAccount.userId, user.id),
+                  eq(socialAccount.platform, 'wordpress'),
+                ),
+              )
+              .get(),
+          );
           if (!account?.credentials) return yield* notFound();
           const credentials = yield* vault.decrypt<WordPressCredentials>(account.credentials);
           const integrations = yield* providerApps.current;
@@ -95,7 +100,7 @@ export const AccountsHandlers = HttpApiBuilder.group(Api, 'accounts', (handlers)
 
       disconnect: ({ payload }) =>
         Effect.flatMap(CurrentUser, (user) =>
-          trySync(() => {
+          query((db) => {
             db.delete(socialAccount)
               .where(and(eq(socialAccount.id, payload.id), eq(socialAccount.userId, user.id)))
               .run();

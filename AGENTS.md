@@ -95,7 +95,8 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   Yield services when the group is built, and `CurrentUser` inside handlers.
 - Groups behind `.middleware(Authorization)` get `CurrentUser`. **Always filter by `CurrentUser.id`** (owner scoping is tested).
 - Fail with the contract's errors (`NotFound`, `BadRequest`, `Conflict`, `BadGateway`; helpers in `http-support.ts`).
-  Inside a Drizzle transaction, throw them and wrap the work in `trySync`, so the transaction rolls back.
+  Handlers reach the database through `handlerDatabase(database)`: `query((db) => ...)` and `transaction(effect)`;
+  failing with an ApiError inside a transaction rolls it back.
 - `@posthub/contract` is shipped to the browser: it may depend only on `effect`. Never import server code into it or the web app.
 - Strings the server trims (titles, credentials) are validated as non-blank in the contract and trimmed in the handler:
   `Schema.Trim` would make the client reject untrimmed input.
@@ -109,6 +110,10 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 - Timestamps are `integer(..., { mode: 'timestamp_ms' })` and surface as `Date`. The API encodes `Date` as ISO strings (`Schema.Date`).
 - IDs are text. Posts use client-generated UUIDs so TanStack DB can insert optimistically.
 - DB access happens only in the server/packages, never in the web app.
+- Effect code uses the `Database` service (`packages/api/src/services.ts`): `database.use((db) => db.select()...all())`
+  runs Drizzle (synchronous on better-sqlite3) and fails with `DatabaseError`; `database.transaction(effect)` commits or
+  rolls back. There is one connection, so never call `db.transaction` directly: the service's lock keeps other fibers'
+  statements out of an open transaction.
 
 ### Web
 

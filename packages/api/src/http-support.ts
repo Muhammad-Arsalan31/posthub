@@ -2,37 +2,37 @@
 import type { Auth, AuthSession } from '@posthub/auth';
 import {
   Authorization,
-  BadGateway,
   BadRequest,
   Conflict,
   CurrentUser,
   InputValidation,
   NotFound,
   Unauthorized,
-  type ApiError,
 } from '@posthub/contract';
+import type { Db } from '@posthub/db';
 import { Context, Effect, Layer } from 'effect';
 import { HttpServerRequest } from 'effect/http';
 import { HttpApiMiddleware } from 'effect/http-api';
+import { DatabaseError, type DatabaseService } from './services';
 
-const isApiError = (error: unknown): error is ApiError =>
-  error instanceof NotFound ||
-  error instanceof BadRequest ||
-  error instanceof Conflict ||
-  error instanceof BadGateway;
+/** Database access for HTTP handlers: a failing statement is a bug, so it becomes a defect (a logged 500). */
+export interface HandlerDatabase {
+  readonly query: <A>(query: (db: Db) => A) => Effect.Effect<A>;
+  /** Runs `effect` in one transaction; failing with an ApiError rolls it back. */
+  readonly transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>;
+}
 
-/**
- * Runs synchronous database work (e.g. a Drizzle transaction). Throwing an ApiError inside it
- * rolls the transaction back and fails with that error; anything else is a defect.
- */
-export const trySync = <A>(work: () => A): Effect.Effect<A, ApiError> =>
-  Effect.suspend(() => {
-    try {
-      return Effect.succeed(work());
-    } catch (error) {
-      return isApiError(error) ? Effect.fail(error) : Effect.die(error);
-    }
-  });
+export const handlerDatabase = (database: DatabaseService): HandlerDatabase => ({
+  query: (query) => Effect.orDie(database.use(query)),
+  transaction: <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+    // Only BEGIN/COMMIT can fail with a DatabaseError here: queries inside already die on errors.
+    database.transaction(effect).pipe(
+      Effect.catchIf(
+        (error): error is DatabaseError => error instanceof DatabaseError,
+        (error) => Effect.die(error),
+      ),
+    ) as Effect.Effect<A, E, R>,
+});
 
 export const notFound = (message = 'Not found.') => new NotFound({ message });
 export const badRequest = (message: string) => new BadRequest({ message });

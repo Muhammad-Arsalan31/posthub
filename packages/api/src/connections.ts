@@ -27,7 +27,7 @@ export const beginOAuth = Effect.fn('beginOAuth')(function* ({
   providerId: string;
   redirectUri: string;
 }) {
-  const db = yield* Database;
+  const database = yield* Database;
   const provider = integrations.oauth(providerId);
   if (!provider) {
     return yield* new ConnectionError({
@@ -35,11 +35,13 @@ export const beginOAuth = Effect.fn('beginOAuth')(function* ({
     });
   }
   const at = yield* now;
-  db.delete(oauthState)
-    .where(lt(oauthState.createdAt, new Date(at.getTime() - STATE_TTL_MS)))
-    .run();
   const state = randomBytes(24).toString('base64url');
-  db.insert(oauthState).values({ state, userId, provider: providerId, createdAt: at }).run();
+  yield* database.use((db) => {
+    db.delete(oauthState)
+      .where(lt(oauthState.createdAt, new Date(at.getTime() - STATE_TTL_MS)))
+      .run();
+    db.insert(oauthState).values({ state, userId, provider: providerId, createdAt: at }).run();
+  });
   return provider.authorizationUrl({ state, redirectUri });
 });
 
@@ -59,9 +61,15 @@ export const completeOAuth = Effect.fn('completeOAuth')(function* ({
   code: string;
   redirectUri: string;
 }) {
-  const db = yield* Database;
-  const row = db.select().from(oauthState).where(eq(oauthState.state, state)).get();
-  if (row) db.delete(oauthState).where(eq(oauthState.state, state)).run();
+  const database = yield* Database;
+  // Consumed whatever happens next, so a state can never be used twice.
+  const row = yield* database.transaction(
+    database.use((db) => {
+      const found = db.select().from(oauthState).where(eq(oauthState.state, state)).get();
+      if (found) db.delete(oauthState).where(eq(oauthState.state, state)).run();
+      return found;
+    }),
+  );
   const at = yield* now;
   if (
     !row ||
@@ -91,30 +99,32 @@ export const saveAccounts = Effect.fn('saveAccounts')(function* (
   userId: string,
   accounts: ConnectedAccount[],
 ) {
-  const db = yield* Database;
+  const database = yield* Database;
   const vault = yield* Vault;
   const updatedAt = yield* now;
-  db.transaction((tx) => {
-    for (const account of accounts) {
-      const values = {
-        userId,
-        displayName: account.displayName,
-        credentials: vault.encrypt(account.credentials),
-        tokenExpiresAt: account.tokenExpiresAt,
-        status: 'active' as const,
-      };
-      tx.insert(socialAccount)
-        .values({
-          id: randomUUID(),
-          platform: account.platform,
-          externalId: account.externalId,
-          ...values,
-        })
-        .onConflictDoUpdate({
-          target: [socialAccount.platform, socialAccount.externalId],
-          set: { ...values, updatedAt },
-        })
-        .run();
-    }
-  });
+  yield* database.transaction(
+    database.use((db) => {
+      for (const account of accounts) {
+        const values = {
+          userId,
+          displayName: account.displayName,
+          credentials: vault.encrypt(account.credentials),
+          tokenExpiresAt: account.tokenExpiresAt,
+          status: 'active' as const,
+        };
+        db.insert(socialAccount)
+          .values({
+            id: randomUUID(),
+            platform: account.platform,
+            externalId: account.externalId,
+            ...values,
+          })
+          .onConflictDoUpdate({
+            target: [socialAccount.platform, socialAccount.externalId],
+            set: { ...values, updatedAt },
+          })
+          .run();
+      }
+    }),
+  );
 });

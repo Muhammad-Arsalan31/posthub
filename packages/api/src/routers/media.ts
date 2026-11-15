@@ -7,7 +7,7 @@ import { mediaAsset, post, postMedia } from '@posthub/db';
 import { and, desc, eq, inArray, like, or } from 'drizzle-orm';
 import { Effect } from 'effect';
 import { HttpApiBuilder } from 'effect/http-api';
-import { badRequest, conflict, notFound, trySync } from '../http-support';
+import { badRequest, conflict, handlerDatabase, notFound } from '../http-support';
 import { inlineRef } from '../inline-media';
 import { Database, MediaDir } from '../services';
 
@@ -35,13 +35,13 @@ function extensionOf(fileName: string) {
 
 export const MediaHandlers = HttpApiBuilder.group(Api, 'media', (handlers) =>
   Effect.gen(function* () {
-    const db = yield* Database;
+    const { query, transaction } = handlerDatabase(yield* Database);
     const mediaDir = yield* MediaDir;
 
     return handlers.handleAll({
       list: () =>
         Effect.flatMap(CurrentUser, (user) =>
-          trySync((): MediaItem[] =>
+          query((db): MediaItem[] =>
             db
               .select(mediaColumns)
               .from(mediaAsset)
@@ -75,7 +75,7 @@ export const MediaHandlers = HttpApiBuilder.group(Api, 'media', (handlers) =>
             }
           });
 
-          return yield* trySync((): MediaItem =>
+          return yield* query((db): MediaItem =>
             db
               .insert(mediaAsset)
               .values({
@@ -94,53 +94,61 @@ export const MediaHandlers = HttpApiBuilder.group(Api, 'media', (handlers) =>
       delete: ({ payload: input }) =>
         Effect.gen(function* () {
           const user = yield* CurrentUser;
-          const asset = yield* trySync(() => {
-            const asset = db
-              .select()
-              .from(mediaAsset)
-              .where(and(eq(mediaAsset.id, input.id), eq(mediaAsset.userId, user.id)))
-              .get();
-            if (!asset) throw notFound();
+          const asset = yield* transaction(
+            Effect.gen(function* () {
+              const asset = yield* query((db) =>
+                db
+                  .select()
+                  .from(mediaAsset)
+                  .where(and(eq(mediaAsset.id, input.id), eq(mediaAsset.userId, user.id)))
+                  .get(),
+              );
+              if (!asset) return yield* notFound();
 
-            // Removing media from a post that is about to publish would change what goes out.
-            const pending = inArray(post.status, ['scheduled', 'publishing']);
-            const inUse =
-              db
-                .select({ title: post.title })
-                .from(postMedia)
-                .innerJoin(post, eq(post.id, postMedia.postId))
-                .where(and(eq(postMedia.mediaId, asset.id), pending))
-                .get() ??
-              db
-                .select({ title: post.title })
-                .from(post)
-                .where(
-                  and(
-                    or(
-                      eq(post.featuredMediaId, asset.id),
-                      eq(post.thumbnailMediaId, asset.id),
-                      like(post.body, `%"${inlineRef(asset.id)}"%`),
-                    ),
-                    pending,
-                  ),
-                )
-                .get();
-            if (inUse) throw conflict(`This file is used by the scheduled post “${inUse.title}”.`);
+              // Removing media from a post that is about to publish would change what goes out.
+              const pending = inArray(post.status, ['scheduled', 'publishing']);
+              const inUse = yield* query(
+                (db) =>
+                  db
+                    .select({ title: post.title })
+                    .from(postMedia)
+                    .innerJoin(post, eq(post.id, postMedia.postId))
+                    .where(and(eq(postMedia.mediaId, asset.id), pending))
+                    .get() ??
+                  db
+                    .select({ title: post.title })
+                    .from(post)
+                    .where(
+                      and(
+                        or(
+                          eq(post.featuredMediaId, asset.id),
+                          eq(post.thumbnailMediaId, asset.id),
+                          like(post.body, `%"${inlineRef(asset.id)}"%`),
+                        ),
+                        pending,
+                      ),
+                    )
+                    .get(),
+              );
+              if (inUse) {
+                return yield* conflict(`This file is used by the scheduled post “${inUse.title}”.`);
+              }
 
-            db.transaction((tx) => {
-              // Migration 0004 added these references without ON DELETE SET NULL, so clear them here.
-              tx.update(post)
-                .set({ featuredMediaId: null })
-                .where(eq(post.featuredMediaId, asset.id))
-                .run();
-              tx.update(post)
-                .set({ thumbnailMediaId: null })
-                .where(eq(post.thumbnailMediaId, asset.id))
-                .run();
-              tx.delete(mediaAsset).where(eq(mediaAsset.id, asset.id)).run();
-            });
-            return asset;
-          });
+              yield* query((db) => {
+                // Migration 0004 added these references without ON DELETE SET NULL, so clear them here.
+                db.update(post)
+                  .set({ featuredMediaId: null })
+                  .where(eq(post.featuredMediaId, asset.id))
+                  .run();
+                db.update(post)
+                  .set({ thumbnailMediaId: null })
+                  .where(eq(post.thumbnailMediaId, asset.id))
+                  .run();
+                db.delete(mediaAsset).where(eq(mediaAsset.id, asset.id)).run();
+              });
+              return asset;
+            }),
+          );
           yield* Effect.promise(() => rm(join(mediaDir, asset.storagePath), { force: true }));
           return { id: asset.id };
         }),
@@ -151,12 +159,14 @@ export const MediaHandlers = HttpApiBuilder.group(Api, 'media', (handlers) =>
 /** One of the owner's uploaded files on disk (for `/files/:id`), or null. */
 export const findOwnMedia = (userId: string, id: string) =>
   Effect.gen(function* () {
-    const db = yield* Database;
+    const database = yield* Database;
     const mediaDir = yield* MediaDir;
-    const asset = db
-      .select({ storagePath: mediaAsset.storagePath, mimeType: mediaAsset.mimeType })
-      .from(mediaAsset)
-      .where(and(eq(mediaAsset.id, id), eq(mediaAsset.userId, userId)))
-      .get();
+    const asset = yield* database.use((db) =>
+      db
+        .select({ storagePath: mediaAsset.storagePath, mimeType: mediaAsset.mimeType })
+        .from(mediaAsset)
+        .where(and(eq(mediaAsset.id, id), eq(mediaAsset.userId, userId)))
+        .get(),
+    );
     return asset ? { path: join(mediaDir, asset.storagePath), mimeType: asset.mimeType } : null;
   });

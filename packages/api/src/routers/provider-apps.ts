@@ -13,11 +13,14 @@ export const ProviderAppsHandlers = HttpApiBuilder.group(Api, 'providerApps', (h
           Effect.catchTag('ProviderAppError', (error) =>
             Effect.fail(new BadRequest({ message: error.message })),
           ),
+          Effect.catchTag('DatabaseError', (error) => Effect.die(error)),
           Effect.as({ provider: payload.provider }),
         ),
 
       remove: ({ payload }) =>
-        providerApps.remove(payload.provider).pipe(Effect.as({ provider: payload.provider })),
+        providerApps
+          .remove(payload.provider)
+          .pipe(Effect.orDie, Effect.as({ provider: payload.provider })),
     });
   }),
 );
