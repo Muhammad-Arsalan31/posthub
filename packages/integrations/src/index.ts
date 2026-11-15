@@ -1,5 +1,6 @@
 export * from './types';
-export { PlatformError } from './errors';
+export { PlatformError, platformError, reason, type PlatformErrorOptions } from './errors';
+export type { PublishError, TransportError } from './http';
 export {
   bodyFormats,
   decodeEntities,
@@ -8,7 +9,7 @@ export {
   isHtmlBody,
   textToHtml,
 } from './content';
-export { createVault, type Vault } from './vault';
+export { createVault, Vault, VaultError, type VaultService } from './vault';
 export { refreshIfExpiring } from './refresh';
 export {
   createIntegrations,

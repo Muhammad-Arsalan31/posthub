@@ -21,9 +21,8 @@ import { useDisclosure } from '@mantine/hooks';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
 import { useState, type FormEvent } from 'react';
-import { client, orpc } from '../../lib/orpc';
-
-type Provider = Awaited<ReturnType<typeof client.accounts.providers>>[number];
+import type { Provider } from '@posthub/contract';
+import { api } from '../../lib/api';
 
 const PLATFORM_LABELS: Record<string, string> = {
   youtube: 'YouTube',
@@ -55,13 +54,13 @@ function AccountsPage() {
   const { connected, error } = Route.useSearch();
   const navigate = useNavigate({ from: Route.fullPath });
   const queryClient = useQueryClient();
-  const accounts = useQuery(orpc.accounts.list.queryOptions());
-  const providers = useQuery(orpc.accounts.providers.queryOptions());
+  const accounts = useQuery(api.accounts.list.queryOptions());
+  const providers = useQuery(api.accounts.providers.queryOptions());
   const [wordPressOpen, wordPress] = useDisclosure(false);
   const [setupFor, setSetupFor] = useState<Provider | null>(null);
 
-  const refresh = () => queryClient.invalidateQueries({ queryKey: orpc.accounts.key() });
-  const disconnect = useMutation(orpc.accounts.disconnect.mutationOptions({ onSuccess: refresh }));
+  const refresh = () => queryClient.invalidateQueries({ queryKey: api.accounts.key() });
+  const disconnect = useMutation(api.accounts.disconnect.mutationOptions({ onSuccess: refresh }));
   const clearBanner = () => void navigate({ search: {} });
 
   return (
@@ -227,10 +226,8 @@ function AppSetupModal(props: { provider: Provider; onClose: () => void; onSaved
   const help = APP_HELP[provider.id];
   const [clientId, setClientId] = useState(provider.clientId ?? '');
   const [clientSecret, setClientSecret] = useState('');
-  const save = useMutation(orpc.providerApps.save.mutationOptions({ onSuccess: props.onSaved }));
-  const remove = useMutation(
-    orpc.providerApps.remove.mutationOptions({ onSuccess: props.onSaved }),
-  );
+  const save = useMutation(api.providerApps.save.mutationOptions({ onSuccess: props.onSaved }));
+  const remove = useMutation(api.providerApps.remove.mutationOptions({ onSuccess: props.onSaved }));
   const redirectUrl = `${window.location.origin}/connect/${provider.id}/callback`;
   const providerId = provider.id === 'wordpress' ? null : provider.id;
   const failure = save.error ?? remove.error;
@@ -313,7 +310,7 @@ function WordPressModal(props: { opened: boolean; onClose: () => void; onConnect
   const [username, setUsername] = useState('');
   const [appPassword, setAppPassword] = useState('');
   const connect = useMutation(
-    orpc.accounts.connectWordPress.mutationOptions({
+    api.accounts.connectWordPress.mutationOptions({
       onSuccess: () => {
         setAppPassword('');
         props.onConnected();

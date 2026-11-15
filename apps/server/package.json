@@ -10,17 +10,16 @@
     "test": "vp test"
   },
   "dependencies": {
-    "@hono/node-server": "catalog:",
-    "@orpc/server": "catalog:",
+    "@effect/platform-node": "catalog:",
     "@posthub/api": "workspace:*",
     "@posthub/auth": "workspace:*",
+    "@posthub/contract": "workspace:*",
     "@posthub/db": "workspace:*",
     "@posthub/integrations": "workspace:*",
     "better-sqlite3": "catalog:",
-    "hono": "catalog:"
+    "effect": "catalog:"
   },
   "devDependencies": {
-    "@orpc/client": "catalog:",
     "@types/node": "catalog:",
     "vite-plus": "catalog:"
   }

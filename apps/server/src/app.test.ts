@@ -1,16 +1,16 @@
-import { createORPCClient } from '@orpc/client';
-import { RPCLink } from '@orpc/client/fetch';
-import type { RouterClient } from '@orpc/server';
-import { createIntegrationsManager, type AppRouter } from '@posthub/api';
+import { NodeHttpServer } from '@effect/platform-node';
+import { apiLayer, Sessions } from '@posthub/api';
+import { fetchApiClient, type PromiseClient } from '@posthub/contract';
 import { createAuth } from '@posthub/auth';
 import { createTestDb } from '@posthub/db/testing';
-import { createVault } from '@posthub/integrations';
 import { createFakeFetch } from '@posthub/integrations/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Context, Layer } from 'effect';
+import { HttpRouter } from 'effect/http';
 import { describe, expect, it } from 'vite-plus/test';
-import { createApp } from './app';
+import { appRoutes } from './app';
 
 const baseURL = 'http://localhost:5173';
 
@@ -27,33 +27,40 @@ function setup() {
       () => ({ items: [{ id: 'UC1', snippet: { title: 'My Channel' } }] }),
     ],
   ]);
-  const vault = createVault('test-encryption-key-test-encryption-key');
   // Google comes from "env"; other providers can be added at runtime through the API.
-  const providerApps = createIntegrationsManager({
-    db,
-    vault,
-    envConfig: { google: { clientId: 'gid', clientSecret: 'gsecret' } },
-    deps: { fetch: google.fetch },
-  });
-  const mediaDir = mkdtempSync(join(tmpdir(), 'posthub-server-media-'));
-  const app = createApp({
-    db,
-    auth,
-    providerApps,
-    vault,
-    mediaDir,
-    publicUrl: baseURL,
-    log: false,
-  });
+  const { handler } = HttpRouter.toWebHandler(
+    appRoutes({ auth, publicUrl: baseURL }).pipe(
+      Layer.provide(Sessions.layer(auth)),
+      Layer.provide(
+        apiLayer({
+          db,
+          encryptionKey: 'test-encryption-key-test-encryption-key',
+          mediaDir: mkdtempSync(join(tmpdir(), 'posthub-server-media-')),
+          envConfig: { google: { clientId: 'gid', clientSecret: 'gsecret' } },
+          integrationDeps: { fetch: google.fetch },
+        }),
+      ),
+      Layer.provide(NodeHttpServer.layerHttpServices),
+    ),
+    { disableLogger: true },
+  );
+  const app = {
+    fetch: (request: Request) => handler(request, Context.empty()),
+    /** A request to the server; paths are relative to the public URL. */
+    request: (path: string, init?: RequestInit) =>
+      handler(new Request(new URL(path, baseURL), init), Context.empty()),
+  };
 
-  const rpc = (cookie?: string): RouterClient<AppRouter> =>
-    createORPCClient(
-      new RPCLink({
-        url: `${baseURL}/rpc`,
-        headers: cookie ? { cookie } : {},
-        fetch: async (request) => app.fetch(request),
-      }),
-    );
+  /** The API as the web app calls it, optionally signed in with a session cookie. */
+  const rpc = (cookie?: string): PromiseClient =>
+    fetchApiClient({
+      baseUrl: baseURL,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        if (cookie) request.headers.set('cookie', cookie);
+        return app.fetch(request);
+      },
+    });
 
   return { app, rpc };
 }
@@ -83,7 +90,7 @@ describe('server', () => {
 
   it('blocks protected procedures without a session', async () => {
     const { rpc } = setup();
-    await expect(rpc().posts.list()).rejects.toMatchObject({ code: 'UNAUTHORIZED' });
+    await expect(rpc().posts.list()).rejects.toMatchObject({ _tag: 'Unauthorized' });
   });
 
   it('signs up and uses the session cookie for oRPC calls', async () => {

@@ -10,31 +10,36 @@ system, and must publish scheduled posts reliably even when no browser window is
 - **Tooling:** Vite+ (`vp`) does dev, build, pack, lint (Oxlint), format (Oxfmt), type check
   (TypeScript 7 via tsgolint) and test (Vitest 5). Root `vite.config.ts` holds the shared lint/fmt config.
 - **Web (`apps/web`):** React 19, TanStack Router (file routes), TanStack Query, TanStack DB, Mantine 9, PWA (vite-plugin-pwa).
-- **Server (`apps/server`):** Hono on `@hono/node-server`, oRPC, better-auth.
+- **Server (`apps/server`):** Effect's HTTP server (`effect/http` on `@effect/platform-node`), HttpApi (`effect/http-api`), better-auth.
 - **Data:** Drizzle ORM + SQLite (better-sqlite3, native module).
+- **Effect:** Effect v4 (`effect` 4.1.x) for all backend logic: connectors, services, the HTTP API and server.
 
 ## Layout
 
 ```
 apps/web/            React PWA
   src/routes/        file-based routes; routeTree.gen.ts is GENERATED, never edit it
-  src/collections/   TanStack DB collections (oRPC-backed)
+  src/collections/   TanStack DB collections (backed by the API client)
   src/components/    post-editor (composer), media (dropzone, library, thumbnails)
   src/lib/platforms.ts  platform labels + publishing rules (mirrors api src/post-rules.ts)
-  src/lib/           orpc client, auth client, query client
+  src/lib/api.ts     API client (`client`) + TanStack Query helpers (`api`); lib/ also has the auth and query clients
   src/providers.tsx  MantineProviders: theme, package CSS, Dates/Modals/Notifications (app + tests)
   src/test/          test setup + renderRoute() helper
-apps/server/         Hono server
+apps/server/         HTTP server (Effect)
   src/env.ts         all config/env in one place (paths, port, secret)
-  src/app.ts         createApp({ db, auth, integrations, vault }): routes, used by index.ts and tests
+  src/index.ts       Layer.launch(server + publisherWorker + apiLayer) under NodeRuntime.runMain
+  src/app.ts         appRoutes({ auth }): every route as an HttpRouter layer, used by index.ts and tests
 packages/db/         Drizzle schema (src/schema), migrations (drizzle/), createDb, runMigrations
   src/testing.ts     createTestDb(), seedUser() for tests (@posthub/db/testing)
 packages/auth/       createAuth(): better-auth config
-packages/api/        oRPC router (src/index.ts), procedures (src/procedures.ts), routers/
-  src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows)
-  src/publisher.ts   background publishing worker (started by apps/server/src/index.ts)
+packages/contract/   web-safe API contract: Effect Schema models, errors, HttpApi groups (src/api.ts),
+                     Promise facade + fetchApiClient() used by the web app and tests
+packages/api/        HttpApi handlers (routers/<area>.ts, assembled in src/routes.ts), services, publisher
+  src/services.ts    Database, MediaDir services; layer.ts has apiLayer() (adds Vault, ProviderApps)
+  src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows, as Effects)
+  src/publisher.ts   Publisher service + publisherWorker layer (background publishing, run by the server)
   src/post-rules.ts  what each platform can publish; checked before a post is scheduled
-  src/testing.ts     testContext(), sessionFor() for procedure tests (@posthub/api/testing)
+  src/testing.ts     testContext(), sessionFor() for handler tests (@posthub/api/testing)
 packages/integrations/  platform connectors: no DB access, injectable fetch
   src/providers/     google (YouTube), meta (Facebook + Instagram), linkedin, wordpress
   src/registry.ts    createIntegrations(config): enabled providers + adapters, PROVIDERS metadata
@@ -71,23 +76,30 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 - In dev, the browser only talks to Vite (:5173), which proxies `/api`, `/rpc` and `/connect` to the server
   (127.0.0.1:4100). Everything is same-origin, so auth cookies need no CORS setup.
 - In production, the server serves `apps/web/dist` itself, also same-origin.
-- `/api/auth/*` is better-auth. `/rpc/*` is oRPC, and the session is resolved per request and put in the context.
-- `/files/:id` streams an uploaded media file to its owner (Range supported). Uploads go through oRPC
+- `/api/auth/*` is better-auth. `/rpc/*` is the HttpApi from `@posthub/contract`; its `Authorization` middleware
+  resolves the session cookie and provides `CurrentUser`.
+- `/files/:id` streams an uploaded media file to its owner (Range supported). Uploads go through the API
   (`media.upload` takes a `File`) and land in the media folder.
-- `/connect/:provider/start` and `/connect/:provider/callback` are the platform OAuth redirects (plain Hono
+- `/connect/:provider/start` and `/connect/:provider/callback` are the platform OAuth redirects (plain HttpRouter
   routes, because they are browser navigations). They finish by redirecting to `/accounts?connected=N` or `?error=...`.
 
 ## Conventions
 
-### API (oRPC)
+### API (Effect HttpApi)
 
-- Add procedures in `packages/api/src/routers/<area>.ts` and mount them in `router` in `src/index.ts`.
-- Use `protectedProcedure` for anything user-scoped; it provides `context.user` and a non-null
-  `context.session`. **Always filter by `context.user.id`** (owner scoping is tested).
-- Validate input with zod (v4). Throw `ORPCError('NOT_FOUND' | 'UNAUTHORIZED' | ...)` for expected errors.
-- The web app imports **only types** from `@posthub/api` (`AppRouter`). Never import server code into the web bundle.
-- Middleware gotcha: context injected via `next({ context })` must not redefine an existing context
-  key with an incompatible type. Doing so silently breaks type inference for every downstream procedure _and_ the web client.
+- Define endpoints in `packages/contract/src/api.ts` (schemas in `domain.ts`), then implement them in
+  `packages/api/src/routers/<area>.ts` with `HttpApiBuilder.group` and add the group to `ApiRoutes` (`src/routes.ts`).
+- Validate with Effect Schema in the contract. Invalid input becomes a `BadRequest` with the schema's message
+  (`InputValidation` middleware), and the typed client also refuses to send it.
+- Backend logic is Effect code over the services in `apiLayer` (`Database`, `Vault`, `MediaDir`, `ProviderApps`).
+  Yield services when the group is built, and `CurrentUser` inside handlers.
+- Groups behind `.middleware(Authorization)` get `CurrentUser`. **Always filter by `CurrentUser.id`** (owner scoping is tested).
+- Fail with the contract's errors (`NotFound`, `BadRequest`, `Conflict`, `BadGateway`; helpers in `http-support.ts`).
+  Handlers reach the database through `handlerDatabase(database)`: `query((db) => ...)` and `transaction(effect)`;
+  failing with an ApiError inside a transaction rolls it back.
+- `@posthub/contract` is shipped to the browser: it may depend only on `effect`. Never import server code into it or the web app.
+- Strings the server trims (titles, credentials) are validated as non-blank in the contract and trimmed in the handler:
+  `Schema.Trim` would make the client reject untrimmed input.
 
 ### Database (Drizzle + SQLite)
 
@@ -95,15 +107,21 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   sync with better-auth), and `app.ts` holds the domain tables.
 - After changing the schema, run `pnpm db:generate` and commit the SQL in `packages/db/drizzle/`.
   Never hand-edit applied migrations. The server applies migrations on every start.
-- Timestamps are `integer(..., { mode: 'timestamp_ms' })` and surface as `Date`. oRPC serializes `Date` natively.
+- Timestamps are `integer(..., { mode: 'timestamp_ms' })` and surface as `Date`. The API encodes `Date` as ISO strings (`Schema.Date`).
 - IDs are text. Posts use client-generated UUIDs so TanStack DB can insert optimistically.
 - DB access happens only in the server/packages, never in the web app.
+- Effect code uses the `Database` service (`packages/api/src/services.ts`): `database.use((db) => db.select()...all())`
+  runs Drizzle (synchronous on better-sqlite3) and fails with `DatabaseError`; `database.transaction(effect)` commits or
+  rolls back. The transaction's effect runs synchronously (one connection, shared with better-auth), so it must not
+  wait for anything: do network calls before or after it. If it does wait, it is rolled back and dies. Never call
+  `db.transaction` directly.
 
 ### Web
 
 - Read data with TanStack DB `useLiveQuery` over a collection. Mutate with `collection.insert/update/delete`;
-  the collection's `onInsert/onUpdate/onDelete` handlers persist through oRPC.
-- For non-collection data, use `orpc.<path>.queryOptions()` with TanStack Query.
+  the collection's `onInsert/onUpdate/onDelete` handlers persist through the API client.
+- For non-collection data, use `api.<group>.<endpoint>.queryOptions()` / `.mutationOptions()` from `src/lib/api.ts`,
+  and `api.<group>.key()` to invalidate. Errors are the contract's typed errors, with a user-facing `message`.
 - Signed-in pages live under `src/routes/_app/` (the guard is in `_app.tsx`). Use Mantine components; don't add CSS frameworks.
 - Installed Mantine extensions: form, dates (+dayjs), charts (+recharts), notifications, modals, tiptap
   (+StarterKit, Link), dropzone, emoji. Their CSS and providers are already wired in `src/providers.tsx`.
@@ -114,15 +132,21 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 
 - A **provider** is a connect flow (`google`, `meta`, `linkedin`, `wordpress`); an **adapter** publishes to one
   platform. One Meta login yields many accounts (each Page plus its linked Instagram account).
-- Adapters implement `PlatformAdapter<C>`: `publish(credentials, input)` and optional `refresh(credentials)`.
-  They receive decrypted credentials and never touch the DB. Callers persist refreshed credentials.
-- Throw `PlatformError` with the right `retryable` flag (429/5xx default to retryable). After the call that
-  creates the post succeeds, **nothing may throw** (e.g. a permalink lookup), or a retry would post twice.
+- Adapters implement `PlatformAdapter<C>`: `publish(credentials, input)` and optional `refresh(credentials)`, each
+  returning an `Effect` that fails with `PublishError` (`PlatformError | TransportError`). They receive decrypted
+  credentials and never touch the DB. Callers persist refreshed credentials.
+- Fail with `platformError(source, message, { retryable })` (a `Schema.TaggedError`; 429/5xx default to retryable).
+  A `TransportError` (network failure) means the outcome is unknown, so it is never retried automatically.
+  After the call that creates the post succeeds, **the effect must not fail** (e.g. a permalink lookup): catch
+  everything with `Effect.catchCause`, or a retry would post twice.
+- Platform calls go through the `Http` helper in `src/http.ts` (Effect's fetch-based `HttpClient`, with tracing
+  headers turned off). Use `Clock`/`Effect.sleep` rather than `Date.now()`/timers so tests can use `TestClock`.
 - Credentials are encrypted with the vault before storage, and `accounts.list` never selects them.
 - **Developer-app credentials** (client id/secret per OAuth provider) are entered on the Accounts page and stored
-  vault-encrypted in `provider_app`. `createIntegrationsManager` (`packages/api/src/provider-apps.ts`) merges them
+  vault-encrypted in `provider_app`. The `ProviderApps` service (`packages/api/src/provider-apps.ts`) merges them
   over env values (`apps/server/src/env.ts`, DB wins field by field) and rebuilds the connectors on save, with no restart.
-  Read `context.integrations` (a per-request snapshot) to use connectors, and `context.providerApps` to change app credentials.
+  Read `(yield* ProviderApps).current` for the connectors as configured right now (per use, not once at startup), and
+  `save`/`remove` on the same service to change app credentials.
   Secrets are never returned to the client.
 - API versions are pinned: Meta Graph `v26.0` (`META_GRAPH_VERSION`), LinkedIn `202608` (`LINKEDIN_API_VERSION`).
   LinkedIn retires versions after about a year and returns 426 `NONEXISTENT_VERSION`.
@@ -130,9 +154,11 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 
 ### Tests
 
-- Import test APIs from `vite-plus/test` (not `vitest`).
+- Import test APIs from `vite-plus/test` (not `vitest`). Tests of Effect code use `@effect/vitest` instead
+  (`it.effect`, `Effect.flip` for expected failures, `TestClock` for time); it shares Vite+'s vitest.
 - Backend tests: use `createTestDb()` (in-memory SQLite, real migrations) and `seedUser()`. Call
-  procedures with `call(router.x.y, input, { context })`, or go through HTTP with `createApp({ db, auth, log: false })`.
+  handlers through `testContext(db, session).api.<group>.<endpoint>(input)` (the full HTTP pipeline, signed in as
+  `session`; `ctx.fetch` sends raw requests), or go through the server with `HttpRouter.toWebHandler(appRoutes({ auth }))` (see `apps/server/src/app.test.ts`).
 - Web tests: jsdom + Testing Library. Use `renderRoute('/path')` and `vi.mock('../lib/auth-client')` for auth.
 
 ### Dependencies
@@ -169,6 +195,7 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   them (they only get attached media). `post.wordpressOptions` holds tags (names, created on the site if missing) and
   categories per WordPress account id.
 - When changing what an adapter accepts, update `packages/api/src/post-rules.ts` and `apps/web/src/lib/platforms.ts` together.
+- Shutdown: Ctrl+C/SIGTERM interrupts the program; the publisher's scope waits for jobs in progress.
 - Planned next: public media URLs (for Instagram), LinkedIn video, then a Windows startup/Electron shell.
 
 ## Releases

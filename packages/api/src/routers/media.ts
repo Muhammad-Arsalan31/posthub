@@ -1,19 +1,17 @@
 import { randomUUID } from 'node:crypto';
-import { createWriteStream } from 'node:fs';
-import { mkdir, rm } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { copyFile, mkdir, rm, stat } from 'node:fs/promises';
 import { extname, join } from 'node:path';
-import { Readable } from 'node:stream';
-import { pipeline } from 'node:stream/promises';
-import type { ReadableStream as WebReadableStream } from 'node:stream/web';
-import { ORPCError } from '@orpc/server';
+import { Api, CurrentUser, MAX_UPLOAD_BYTES, type MediaItem } from '@posthub/contract';
 import { mediaAsset, post, postMedia } from '@posthub/db';
 import { and, desc, eq, inArray, like, or } from 'drizzle-orm';
-import { z } from 'zod';
+import { Effect } from 'effect';
+import { HttpApiBuilder } from 'effect/http-api';
+import { badRequest, conflict, handlerDatabase, notFound } from '../http-support';
 import { inlineRef } from '../inline-media';
-import { protectedProcedure } from '../procedures';
+import { Database, MediaDir } from '../services';
 
-/** Uploads are buffered by the RPC handler, so keep this sensible for a local machine. */
-export const MAX_UPLOAD_BYTES = 1024 * 1024 * 1024;
+export { MAX_UPLOAD_BYTES };
 
 /** Everything except the storage path, which only the server needs. */
 export const mediaColumns = {
@@ -35,108 +33,140 @@ function extensionOf(fileName: string) {
   return /^\.[a-z0-9]{1,8}$/.test(ext) ? ext : '';
 }
 
-export const mediaRouter = {
-  list: protectedProcedure.handler(({ context }) =>
-    context.db
-      .select(mediaColumns)
-      .from(mediaAsset)
-      .where(eq(mediaAsset.userId, context.user.id))
-      .orderBy(desc(mediaAsset.createdAt)),
-  ),
+export const MediaHandlers = HttpApiBuilder.group(Api, 'media', (handlers) =>
+  Effect.gen(function* () {
+    const { query, transaction } = handlerDatabase(yield* Database);
+    const mediaDir = yield* MediaDir;
 
-  upload: protectedProcedure
-    .input(
-      z.object({
-        file: z
-          .file()
-          .min(1, 'The file is empty.')
-          .max(MAX_UPLOAD_BYTES, 'Files can be up to 1 GB.')
-          .refine((f) => isMediaType(f.type), 'Only images and videos can be uploaded.'),
-      }),
-    )
-    .handler(async ({ context, input }) => {
-      const { file } = input;
-      const id = randomUUID();
-      const storagePath = `${id}${extensionOf(file.name)}`;
-      const target = join(context.mediaDir, storagePath);
+    return handlers.handleAll({
+      list: () =>
+        Effect.flatMap(CurrentUser, (user) =>
+          query((db): MediaItem[] =>
+            db
+              .select(mediaColumns)
+              .from(mediaAsset)
+              .where(eq(mediaAsset.userId, user.id))
+              .orderBy(desc(mediaAsset.createdAt))
+              .all(),
+          ),
+        ),
 
-      await mkdir(context.mediaDir, { recursive: true });
-      try {
-        await pipeline(
-          Readable.fromWeb(file.stream() as WebReadableStream),
-          createWriteStream(target, { flags: 'wx' }),
-        );
-      } catch (error) {
-        await rm(target, { force: true });
-        throw error;
-      }
+      // The multipart parser has already streamed the file to a temp folder (removed afterwards).
+      upload: ({ payload: { file } }) =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser;
+          const { size } = yield* Effect.promise(() => stat(file.path));
+          if (size === 0) return yield* badRequest('The file is empty.');
+          if (size > MAX_UPLOAD_BYTES) return yield* badRequest('Files can be up to 1 GB.');
+          if (!isMediaType(file.contentType)) {
+            return yield* badRequest('Only images and videos can be uploaded.');
+          }
 
-      const [created] = await context.db
-        .insert(mediaAsset)
-        .values({
-          id,
-          userId: context.user.id,
-          fileName: file.name || storagePath,
-          mimeType: file.type,
-          sizeBytes: file.size,
-          storagePath,
-        })
-        .returning(mediaColumns);
-      return created!;
-    }),
+          const id = randomUUID();
+          const storagePath = `${id}${extensionOf(file.name)}`;
+          const target = join(mediaDir, storagePath);
+          yield* Effect.promise(async () => {
+            await mkdir(mediaDir, { recursive: true });
+            try {
+              await copyFile(file.path, target, constants.COPYFILE_EXCL);
+            } catch (error) {
+              await rm(target, { force: true });
+              throw error;
+            }
+          });
 
-  delete: protectedProcedure
-    .input(z.object({ id: z.string() }))
-    .handler(async ({ context, input }) => {
-      const asset = context.db
-        .select()
+          return yield* query((db): MediaItem =>
+            db
+              .insert(mediaAsset)
+              .values({
+                id,
+                userId: user.id,
+                fileName: file.name || storagePath,
+                mimeType: file.contentType,
+                sizeBytes: size,
+                storagePath,
+              })
+              .returning(mediaColumns)
+              .get(),
+          );
+        }),
+
+      delete: ({ payload: input }) =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser;
+          const asset = yield* transaction(
+            Effect.gen(function* () {
+              const asset = yield* query((db) =>
+                db
+                  .select()
+                  .from(mediaAsset)
+                  .where(and(eq(mediaAsset.id, input.id), eq(mediaAsset.userId, user.id)))
+                  .get(),
+              );
+              if (!asset) return yield* notFound();
+
+              // Removing media from a post that is about to publish would change what goes out.
+              const pending = inArray(post.status, ['scheduled', 'publishing']);
+              const inUse = yield* query(
+                (db) =>
+                  db
+                    .select({ title: post.title })
+                    .from(postMedia)
+                    .innerJoin(post, eq(post.id, postMedia.postId))
+                    .where(and(eq(postMedia.mediaId, asset.id), pending))
+                    .get() ??
+                  db
+                    .select({ title: post.title })
+                    .from(post)
+                    .where(
+                      and(
+                        or(
+                          eq(post.featuredMediaId, asset.id),
+                          eq(post.thumbnailMediaId, asset.id),
+                          like(post.body, `%"${inlineRef(asset.id)}"%`),
+                        ),
+                        pending,
+                      ),
+                    )
+                    .get(),
+              );
+              if (inUse) {
+                return yield* conflict(`This file is used by the scheduled post “${inUse.title}”.`);
+              }
+
+              yield* query((db) => {
+                // Migration 0004 added these references without ON DELETE SET NULL, so clear them here.
+                db.update(post)
+                  .set({ featuredMediaId: null })
+                  .where(eq(post.featuredMediaId, asset.id))
+                  .run();
+                db.update(post)
+                  .set({ thumbnailMediaId: null })
+                  .where(eq(post.thumbnailMediaId, asset.id))
+                  .run();
+                db.delete(mediaAsset).where(eq(mediaAsset.id, asset.id)).run();
+              });
+              return asset;
+            }),
+          );
+          yield* Effect.promise(() => rm(join(mediaDir, asset.storagePath), { force: true }));
+          return { id: asset.id };
+        }),
+    });
+  }),
+);
+
+/** One of the owner's uploaded files on disk (for `/files/:id`), or null. */
+export const findOwnMedia = (userId: string, id: string) =>
+  Effect.gen(function* () {
+    const database = yield* Database;
+    const mediaDir = yield* MediaDir;
+    const asset = yield* database.use((db) =>
+      db
+        .select({ storagePath: mediaAsset.storagePath, mimeType: mediaAsset.mimeType })
         .from(mediaAsset)
-        .where(and(eq(mediaAsset.id, input.id), eq(mediaAsset.userId, context.user.id)))
-        .get();
-      if (!asset) throw new ORPCError('NOT_FOUND');
-
-      // Removing media from a post that is about to publish would change what goes out.
-      const pending = inArray(post.status, ['scheduled', 'publishing']);
-      const inUse =
-        context.db
-          .select({ title: post.title })
-          .from(postMedia)
-          .innerJoin(post, eq(post.id, postMedia.postId))
-          .where(and(eq(postMedia.mediaId, asset.id), pending))
-          .get() ??
-        context.db
-          .select({ title: post.title })
-          .from(post)
-          .where(
-            and(
-              or(
-                eq(post.featuredMediaId, asset.id),
-                eq(post.thumbnailMediaId, asset.id),
-                like(post.body, `%"${inlineRef(asset.id)}"%`),
-              ),
-              pending,
-            ),
-          )
-          .get();
-      if (inUse) {
-        throw new ORPCError('CONFLICT', {
-          message: `This file is used by the scheduled post “${inUse.title}”.`,
-        });
-      }
-
-      context.db.transaction((tx) => {
-        // Migration 0004 added these references without ON DELETE SET NULL, so clear them here.
-        tx.update(post)
-          .set({ featuredMediaId: null })
-          .where(eq(post.featuredMediaId, asset.id))
-          .run();
-        tx.update(post)
-          .set({ thumbnailMediaId: null })
-          .where(eq(post.thumbnailMediaId, asset.id))
-          .run();
-        tx.delete(mediaAsset).where(eq(mediaAsset.id, asset.id)).run();
-      });
-      await rm(join(context.mediaDir, asset.storagePath), { force: true });
-      return { id: asset.id };
-    }),
-};
+        .where(and(eq(mediaAsset.id, id), eq(mediaAsset.userId, userId)))
+        .get(),
+    );
+    return asset ? { path: join(mediaDir, asset.storagePath), mimeType: asset.mimeType } : null;
+  });

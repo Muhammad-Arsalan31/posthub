@@ -14,14 +14,14 @@ vi.mock('../lib/auth-client', () => ({
 
 describe('auth guard', () => {
   it('redirects signed-out users to /login', async () => {
-    const { router } = renderRoute('/');
+    const { router } = await renderRoute('/');
 
     expect(await screen.findByRole('button', { name: 'Sign in' })).toBeTruthy();
     await waitFor(() => expect(router.state.location.pathname).toBe('/login'));
   });
 
   it('shows the name field when creating an account', async () => {
-    renderRoute('/login');
+    await renderRoute('/login');
     await screen.findByRole('button', { name: 'Sign in' });
     expect(screen.queryByLabelText(/Name/)).toBeNull();
 

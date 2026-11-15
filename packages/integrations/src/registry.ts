@@ -1,4 +1,4 @@
-import type { HttpDeps } from './http';
+import { fetchClient, makeHttp } from './http';
 import { createGoogle, type GoogleConfig } from './providers/google';
 import { createLinkedIn, type LinkedInConfig } from './providers/linkedin';
 import { createMeta, type MetaConfig } from './providers/meta';
@@ -62,17 +62,16 @@ export const PROVIDERS: ProviderInfo[] = [
   },
 ];
 
-export interface IntegrationDeps extends Partial<HttpDeps> {
+export interface IntegrationDeps {
+  /** Send platform requests through this fetch. Tests pass a fake. */
+  fetch?: typeof globalThis.fetch;
   /** Instagram processing poll interval. Tests set it to 0. */
   pollIntervalMs?: number;
 }
 
 /** Builds every connector the server has credentials for. Inject `fetch` in tests. */
 export function createIntegrations(config: IntegrationsConfig, deps: IntegrationDeps = {}) {
-  const http: HttpDeps = {
-    fetch: deps.fetch ?? ((input, init) => fetch(input, init)),
-    sleep: deps.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
-  };
+  const http = makeHttp(fetchClient(deps.fetch ?? ((input, init) => fetch(input, init))));
   const providers = new Map<OAuthProviderId, OAuthProvider>();
   const adapters = new Map<Platform, PlatformAdapter<unknown>>();
 
@@ -82,7 +81,7 @@ export function createIntegrations(config: IntegrationsConfig, deps: Integration
     adapters.set('youtube', google.adapters.youtube);
   }
   if (config.meta) {
-    const meta = createMeta(config.meta, { ...http, pollIntervalMs: deps.pollIntervalMs });
+    const meta = createMeta(config.meta, http, { pollIntervalMs: deps.pollIntervalMs });
     providers.set('meta', meta.provider);
     adapters.set('facebook', meta.adapters.facebook);
     adapters.set('instagram', meta.adapters.instagram);

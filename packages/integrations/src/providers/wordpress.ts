@@ -1,6 +1,7 @@
 // Self-hosted WordPress via the REST API with Application Passwords (Users → Profile → Application Passwords).
-import { PlatformError } from '../errors';
-import { fileBlob, request, type HttpDeps } from '../http';
+import { Effect } from 'effect';
+import { platformError, PlatformError } from '../errors';
+import { fileBody, get, json, post, type Http } from '../http';
 import { decodeEntities, escapeHtml, textToHtml } from '../content';
 import {
   isImage,
@@ -37,25 +38,24 @@ const basicAuth = (c: Pick<WordPressCredentials, 'username' | 'appPassword'>) =>
 });
 
 /** Accepts any WordPress URL people paste (login page, admin, API) and returns the site root. */
-export function normalizeSiteUrl(raw: string) {
-  let url: URL;
-  try {
-    url = new URL(raw.trim());
-  } catch {
-    throw new PlatformError('wordpress', 'Enter a full site URL, like https://example.com.');
-  }
-  if (url.protocol !== 'https:' && !LOCAL_HOSTS.test(url.hostname)) {
-    throw new PlatformError(
-      'wordpress',
-      'Use an https:// site URL. Application Passwords should never be sent over plain HTTP.',
+export const normalizeSiteUrl = (raw: string): Effect.Effect<string, PlatformError> =>
+  Effect.gen(function* () {
+    const url = yield* Effect.try({
+      try: () => new URL(raw.trim()),
+      catch: () => platformError('wordpress', 'Enter a full site URL, like https://example.com.'),
+    });
+    if (url.protocol !== 'https:' && !LOCAL_HOSTS.test(url.hostname)) {
+      return yield* platformError(
+        'wordpress',
+        'Use an https:// site URL. Application Passwords should never be sent over plain HTTP.',
+      );
+    }
+    const path = url.pathname.replace(
+      /\/(wp-login\.php|wp-admin|wp-json|xmlrpc\.php|index\.php)(\/.*)?$/i,
+      '',
     );
-  }
-  const path = url.pathname.replace(
-    /\/(wp-login\.php|wp-admin|wp-json|xmlrpc\.php|index\.php)(\/.*)?$/i,
-    '',
-  );
-  return `${url.origin}${path}`.replace(/\/+$/, '');
-}
+    return `${url.origin}${path}`.replace(/\/+$/, '');
+  });
 
 /** WordPress REST error code -> what the person should actually do. */
 const AUTH_ERRORS: Record<string, string> = {
@@ -141,35 +141,30 @@ export function postContent(html: string, link?: string, media: EmbeddedMedia[] 
   return parts.join('\n');
 }
 
-export function createWordPress(deps: HttpDeps) {
-  /** Fetches a REST API index; null unless it is real JSON (not an HTML page). */
-  async function apiIndex(url: string) {
-    try {
-      const res = await deps.fetch(url);
-      if (!res.ok) return null;
-      const info = (await res.json()) as { name?: string; namespaces?: unknown };
-      return Array.isArray(info.namespaces) ? info : null;
-    } catch {
-      return null;
-    }
-  }
+export function createWordPress(http: Http) {
+  /** Fetches a REST API index; null unless it is real JSON (not an HTML page or an error). */
+  const apiIndex = (url: string) =>
+    http<{ name?: string; namespaces?: unknown }>('wordpress', get(url)).pipe(
+      Effect.map(({ data }) =>
+        data && typeof data === 'object' && Array.isArray(data.namespaces) ? data : null,
+      ),
+      Effect.catchCause(() => Effect.succeed(null)),
+    );
 
-  async function discoverApiBase(siteUrl: string) {
-    const pretty = await apiIndex(`${siteUrl}/wp-json/`);
+  const discoverApiBase = Effect.fnUntraced(function* (siteUrl: string) {
+    const pretty = yield* apiIndex(`${siteUrl}/wp-json/`);
     if (pretty) return { apiBase: `${siteUrl}/wp-json`, siteName: pretty.name };
-    const plain = await apiIndex(`${siteUrl}/?rest_route=/`);
+    const plain = yield* apiIndex(`${siteUrl}/?rest_route=/`);
     if (plain) return { apiBase: `${siteUrl}/?rest_route=`, siteName: plain.name };
-    throw new PlatformError(
+    return yield* platformError(
       'wordpress',
       `Could not find the WordPress REST API at ${siteUrl}. Check the site URL, and that no plugin disables the REST API.`,
     );
-  }
+  });
 
-  async function connect(
-    input: WordPressConnectInput,
-  ): Promise<ConnectedAccount<WordPressCredentials>> {
-    const siteUrl = normalizeSiteUrl(input.siteUrl);
-    const { apiBase, siteName } = await discoverApiBase(siteUrl);
+  const connect = Effect.fnUntraced(function* (input: WordPressConnectInput) {
+    const siteUrl = yield* normalizeSiteUrl(input.siteUrl);
+    const { apiBase, siteName } = yield* discoverApiBase(siteUrl);
     const credentials: WordPressCredentials = {
       siteUrl,
       apiBase,
@@ -178,122 +173,48 @@ export function createWordPress(deps: HttpDeps) {
       appPassword: input.appPassword.trim(),
     };
 
-    let me: { id: number; name: string };
-    try {
-      ({ data: me } = await request<{ id: number; name: string }>(
-        deps,
-        'wordpress',
-        endpoint(apiBase, '/wp/v2/users/me', { context: 'edit' }),
-        { headers: basicAuth(credentials) },
-      ));
-    } catch (error) {
-      if (error instanceof PlatformError && (error.status === 401 || error.status === 403)) {
-        throw new PlatformError('wordpress', authErrorMessage(error), {
-          status: error.status,
-          body: error.body,
-        });
-      }
-      throw error;
-    }
+    const { data: me } = yield* http<{ id: number; name: string }>(
+      'wordpress',
+      get(endpoint(apiBase, '/wp/v2/users/me', { context: 'edit' }), {
+        headers: basicAuth(credentials),
+      }),
+    ).pipe(
+      Effect.catchIf(
+        (error): error is PlatformError =>
+          error instanceof PlatformError && (error.status === 401 || error.status === 403),
+        (error) =>
+          Effect.fail(
+            platformError('wordpress', authErrorMessage(error), {
+              status: error.status,
+              body: error.body,
+            }),
+          ),
+      ),
+    );
 
-    return {
+    const account: ConnectedAccount<WordPressCredentials> = {
       platform: 'wordpress',
       externalId: `${siteUrl}#${me.id}`,
       displayName: `${siteName || new URL(siteUrl).host} (${me.name})`,
       credentials,
       tokenExpiresAt: null,
     };
-  }
-
-  const adapter: PlatformAdapter<WordPressCredentials> = {
-    platform: 'wordpress',
-
-    async publish(credentials, input) {
-      const auth = basicAuth(credentials);
-
-      const upload = async (file: MediaFile) => {
-        const safeName = file.fileName.replace(/[^\w.-]+/g, '_');
-        const { data } = await request<{ id: number; source_url: string }>(
-          deps,
-          'wordpress',
-          endpoint(credentials.apiBase, '/wp/v2/media'),
-          {
-            method: 'POST',
-            headers: {
-              ...auth,
-              'content-type': file.mimeType,
-              'content-disposition': `attachment; filename="${safeName}"`,
-            },
-            body: await fileBlob(file),
-          },
-        );
-        return data;
-      };
-
-      // Upload every image and video, in order. Many themes don't show the featured image on the
-      // post page, so attached media is also embedded in the content.
-      const embedded: Array<EmbeddedMedia & { path: string }> = [];
-      for (const file of input.media) {
-        const kind = isImage(file) ? 'image' : isVideo(file) ? 'video' : null;
-        if (!kind) continue;
-        const data = await upload(file);
-        embedded.push({ id: data.id, url: data.source_url, kind, path: file.path });
-      }
-
-      // Images placed inside the text: uploaded once each, then swapped in where they were written.
-      const inline: Array<{ ref: string; media: EmbeddedMedia; path: string }> = [];
-      for (const { ref, file } of input.inlineImages ?? []) {
-        const data = await upload(file);
-        inline.push({
-          ref,
-          path: file.path,
-          media: { id: data.id, url: data.source_url, kind: 'image' },
-        });
-      }
-
-      // The chosen featured image (reusing an upload when possible), else the first image.
-      const uploadedId = (path: string) =>
-        embedded.find((m) => m.path === path)?.id ?? inline.find((m) => m.path === path)?.media.id;
-      const chosen = input.featuredImage;
-      const featuredMedia = chosen
-        ? (uploadedId(chosen.path) ?? (await upload(chosen)).id)
-        : (embedded.find((m) => m.kind === 'image')?.id ?? inline[0]?.media.id);
-
-      const options = input.wordpress;
-      const tagIds = options?.tags.length ? await resolveTags(credentials, options.tags) : [];
-      const html = replaceInlineImages(input.html ?? textToHtml(input.text), inline);
-
-      const { data: post } = await request<{ id: number; link: string }>(
-        deps,
-        'wordpress',
-        endpoint(credentials.apiBase, '/wp/v2/posts'),
-        {
-          method: 'POST',
-          headers: { ...auth, 'content-type': 'application/json' },
-          body: JSON.stringify({
-            title: input.title,
-            content: postContent(html, input.link, embedded),
-            status: 'publish',
-            ...(featuredMedia ? { featured_media: featuredMedia } : {}),
-            ...(options?.categoryIds.length ? { categories: options.categoryIds } : {}),
-            ...(tagIds.length ? { tags: tagIds } : {}),
-          }),
-        },
-      );
-      return { externalId: String(post.id), url: post.link };
-    },
-  };
+    return account;
+  });
 
   /** Tag ids by name, creating tags the site doesn't have yet. */
-  async function resolveTags(credentials: WordPressCredentials, names: string[]) {
+  const resolveTags = Effect.fnUntraced(function* (
+    credentials: WordPressCredentials,
+    names: string[],
+  ) {
     const auth = basicAuth(credentials);
     const ids: number[] = [];
     for (const name of [...new Set(names.map((n) => n.trim()).filter(Boolean))]) {
-      const { data: found } = await request<Array<{ id: number; name: string }>>(
-        deps,
+      const { data: found } = yield* http<Array<{ id: number; name: string }>>(
         'wordpress',
-        endpoint(credentials.apiBase, '/wp/v2/tags', { search: name, per_page: '100' }),
-        { headers: auth },
+        get(endpoint(credentials.apiBase, '/wp/v2/tags', { search: name, per_page: '100' }), {
+          headers: auth,
+        }),
       );
       // WordPress returns names HTML-escaped (e.g. "R&amp;D").
       const match = found.find((t) => decodeEntities(t.name).toLowerCase() === name.toLowerCase());
@@ -301,52 +222,122 @@ export function createWordPress(deps: HttpDeps) {
         ids.push(match.id);
         continue;
       }
-      try {
-        const { data: created } = await request<{ id: number }>(
-          deps,
-          'wordpress',
-          endpoint(credentials.apiBase, '/wp/v2/tags'),
-          {
-            method: 'POST',
-            headers: { ...auth, 'content-type': 'application/json' },
-            body: JSON.stringify({ name }),
-          },
-        );
-        ids.push(created.id);
-      } catch (error) {
+      const id = yield* http<{ id: number }>(
+        'wordpress',
+        post(endpoint(credentials.apiBase, '/wp/v2/tags'), { headers: auth, body: json({ name }) }),
+      ).pipe(
+        Effect.map(({ data }) => data.id),
         // Already exists (e.g. differs only by accents): WordPress names the existing tag's id.
-        const body = error instanceof PlatformError ? error.body : undefined;
-        const termId = (body as { data?: { term_id?: unknown } } | undefined)?.data?.term_id;
-        if (typeof termId === 'number') {
-          ids.push(termId);
-          continue;
-        }
-        throw error;
-      }
+        Effect.catchIf(
+          (error): error is PlatformError =>
+            error instanceof PlatformError && existingTermId(error.body) !== undefined,
+          (error) => Effect.succeed(existingTermId(error.body) ?? 0),
+        ),
+      );
+      ids.push(id);
     }
     return ids;
-  }
+  });
+
+  const adapter: PlatformAdapter<WordPressCredentials> = {
+    platform: 'wordpress',
+
+    publish: (credentials, input) =>
+      Effect.gen(function* () {
+        const auth = basicAuth(credentials);
+
+        const upload = (file: MediaFile) =>
+          Effect.gen(function* () {
+            const safeName = file.fileName.replace(/[^\w.-]+/g, '_');
+            const { data } = yield* http<{ id: number; source_url: string }>(
+              'wordpress',
+              post(endpoint(credentials.apiBase, '/wp/v2/media'), {
+                headers: { ...auth, 'content-disposition': `attachment; filename="${safeName}"` },
+                body: yield* fileBody(file),
+              }),
+            );
+            return data;
+          });
+
+        // Upload every image and video, in order. Many themes don't show the featured image on
+        // the post page, so attached media is also embedded in the content.
+        const embedded: Array<EmbeddedMedia & { path: string }> = [];
+        for (const file of input.media) {
+          const kind = isImage(file) ? 'image' : isVideo(file) ? 'video' : null;
+          if (!kind) continue;
+          const data = yield* upload(file);
+          embedded.push({ id: data.id, url: data.source_url, kind, path: file.path });
+        }
+
+        // Images placed inside the text: uploaded once each, then swapped in where they were written.
+        const inline: Array<{ ref: string; media: EmbeddedMedia; path: string }> = [];
+        for (const { ref, file } of input.inlineImages ?? []) {
+          const data = yield* upload(file);
+          inline.push({
+            ref,
+            path: file.path,
+            media: { id: data.id, url: data.source_url, kind: 'image' },
+          });
+        }
+
+        // The chosen featured image (reusing an upload when possible), else the first image.
+        const uploadedId = (path: string) =>
+          embedded.find((m) => m.path === path)?.id ??
+          inline.find((m) => m.path === path)?.media.id;
+        const chosen = input.featuredImage;
+        const featuredMedia = chosen
+          ? (uploadedId(chosen.path) ?? (yield* upload(chosen)).id)
+          : (embedded.find((m) => m.kind === 'image')?.id ?? inline[0]?.media.id);
+
+        const options = input.wordpress;
+        const tagIds = options?.tags.length ? yield* resolveTags(credentials, options.tags) : [];
+        const html = replaceInlineImages(input.html ?? textToHtml(input.text), inline);
+
+        const { data: created } = yield* http<{ id: number; link: string }>(
+          'wordpress',
+          post(endpoint(credentials.apiBase, '/wp/v2/posts'), {
+            headers: auth,
+            body: json({
+              title: input.title,
+              content: postContent(html, input.link, embedded),
+              status: 'publish',
+              ...(featuredMedia ? { featured_media: featuredMedia } : {}),
+              ...(options?.categoryIds.length ? { categories: options.categoryIds } : {}),
+              ...(tagIds.length ? { tags: tagIds } : {}),
+            }),
+          }),
+        );
+        return { externalId: String(created.id), url: created.link };
+      }),
+  };
 
   /** Every category on the site (up to 500), for picking when composing. */
-  async function categories(credentials: WordPressCredentials): Promise<WordPressCategory[]> {
+  const categories = Effect.fnUntraced(function* (credentials: WordPressCredentials) {
     const all: WordPressCategory[] = [];
     for (let page = 1; page <= 5; page++) {
-      const { data, response } = await request<WordPressCategory[]>(
-        deps,
+      const { data, response } = yield* http<WordPressCategory[]>(
         'wordpress',
-        endpoint(credentials.apiBase, '/wp/v2/categories', {
-          per_page: '100',
-          page: String(page),
-          orderby: 'name',
-          _fields: 'id,name,parent',
-        }),
-        { headers: basicAuth(credentials) },
+        get(
+          endpoint(credentials.apiBase, '/wp/v2/categories', {
+            per_page: '100',
+            page: String(page),
+            orderby: 'name',
+            _fields: 'id,name,parent',
+          }),
+          { headers: basicAuth(credentials) },
+        ),
       );
       all.push(...data.map((c) => ({ ...c, name: decodeEntities(c.name) })));
-      if (page >= Number(response.headers.get('x-wp-totalpages') ?? 1)) break;
+      if (page >= Number(response.headers['x-wp-totalpages'] ?? 1)) break;
     }
     return all;
-  }
+  });
 
   return { connect, adapter, categories };
+}
+
+/** The id WordPress names when a tag already exists (`term_exists`). */
+function existingTermId(body: unknown) {
+  const termId = (body as { data?: { term_id?: unknown } } | undefined)?.data?.term_id;
+  return typeof termId === 'number' ? termId : undefined;
 }

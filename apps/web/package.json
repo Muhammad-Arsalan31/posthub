@@ -20,8 +20,7 @@
     "@mantine/modals": "catalog:",
     "@mantine/notifications": "catalog:",
     "@mantine/tiptap": "catalog:",
-    "@orpc/client": "catalog:",
-    "@orpc/tanstack-query": "catalog:",
+    "@posthub/contract": "workspace:*",
     "@tanstack/query-db-collection": "catalog:",
     "@tanstack/react-db": "catalog:",
     "@tanstack/react-query": "catalog:",
@@ -38,8 +37,6 @@
     "recharts": "catalog:"
   },
   "devDependencies": {
-    "@orpc/server": "catalog:",
-    "@posthub/api": "workspace:*",
     "@tanstack/react-router-devtools": "catalog:",
     "@tanstack/router-plugin": "catalog:",
     "@testing-library/react": "catalog:",

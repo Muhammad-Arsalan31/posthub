@@ -1,49 +1,23 @@
 import { randomUUID } from 'node:crypto';
-import { ORPCError } from '@orpc/server';
 import {
-  mediaAsset,
-  post,
-  postMedia,
-  postTarget,
-  socialAccount,
-  type Db,
-  type PostStatus,
-} from '@posthub/db';
+  Api,
+  CurrentUser,
+  EDITABLE_STATUSES,
+  type Platform,
+  type Post,
+  type PostFields,
+} from '@posthub/contract';
+import { mediaAsset, post, postMedia, postTarget, socialAccount, type Db } from '@posthub/db';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
-import { z } from 'zod';
+import { Clock, Effect } from 'effect';
+import { HttpApiBuilder } from 'effect/http-api';
+import { badRequest, conflict, handlerDatabase, notFound } from '../http-support';
 import { inlineMediaIds } from '../inline-media';
 import { isManualPlatform, platformProblem } from '../post-rules';
-import { protectedProcedure } from '../procedures';
 import { refreshPostStatus } from '../publisher';
+import { Database } from '../services';
 
-/** Statuses the owner can set. The publisher moves posts on from `scheduled`. */
-const EDITABLE_STATUSES = ['draft', 'scheduled'] as const satisfies PostStatus[];
-
-const postFields = z.object({
-  title: z.string().trim().min(1).max(200),
-  /** Editor HTML. */
-  body: z.string().max(100_000),
-  link: z
-    .url({ protocol: /^https?$/ })
-    .max(2000)
-    .nullable(),
-  status: z.enum(EDITABLE_STATUSES),
-  scheduledAt: z.date().nullable(),
-  accountIds: z.array(z.string()).max(50),
-  mediaIds: z.array(z.string()).max(20),
-  /** WordPress featured image; null uses the first attached image. */
-  featuredMediaId: z.string().nullable(),
-  /** YouTube custom thumbnail. */
-  thumbnailMediaId: z.string().nullable(),
-  wordpressOptions: z
-    .object({
-      tags: z.array(z.string().trim().min(1).max(100)).max(50),
-      categories: z.record(z.string(), z.array(z.number().int().positive()).max(100)),
-    })
-    .nullable(),
-});
-
-type PostInput = z.infer<typeof postFields>;
+type PostInput = PostFields;
 
 const targetColumns = {
   id: postTarget.id,
@@ -58,7 +32,7 @@ const targetColumns = {
 };
 
 /** Posts with their selected accounts, media (in order) and per-platform publish state. */
-function loadPosts(db: Db, userId: string, ids?: string[]) {
+function loadPosts(db: Db, userId: string, ids?: string[]): Post[] {
   const where = ids ? and(eq(post.userId, userId), inArray(post.id, ids)) : eq(post.userId, userId);
   const posts = db.select().from(post).where(where).orderBy(desc(post.createdAt)).all();
   const postIds = posts.map((p) => p.id);
@@ -88,258 +62,311 @@ function loadPosts(db: Db, userId: string, ids?: string[]) {
   });
 }
 
-const badRequest = (message: string) => new ORPCError('BAD_REQUEST', { message });
-
-/**
- * Creates or updates a post with its targets and media in one transaction.
- * Scheduling is validated against every selected platform first.
- */
-function savePost(db: Db, userId: string, id: string, input: PostInput, isNew: boolean) {
-  db.transaction((tx) => {
-    const accounts = input.accountIds.length
-      ? tx
-          .select({
-            id: socialAccount.id,
-            platform: socialAccount.platform,
-            displayName: socialAccount.displayName,
-            status: socialAccount.status,
-          })
-          .from(socialAccount)
-          .where(and(eq(socialAccount.userId, userId), inArray(socialAccount.id, input.accountIds)))
-          .all()
-      : [];
-    if (accounts.length !== new Set(input.accountIds).size) {
-      throw badRequest('One of the selected accounts no longer exists.');
-    }
-
-    const imageIds = [
-      input.featuredMediaId,
-      input.thumbnailMediaId,
-      ...inlineMediaIds(input.body),
-    ].filter((mediaId): mediaId is string => mediaId !== null);
-    const allMediaIds = [...new Set([...input.mediaIds, ...imageIds])];
-    const found = allMediaIds.length
-      ? tx
-          .select({
-            id: mediaAsset.id,
-            mimeType: mediaAsset.mimeType,
-            sizeBytes: mediaAsset.sizeBytes,
-          })
-          .from(mediaAsset)
-          .where(and(eq(mediaAsset.userId, userId), inArray(mediaAsset.id, allMediaIds)))
-          .all()
-      : [];
-    if (found.length !== allMediaIds.length) {
-      throw badRequest('One of the attached files no longer exists.');
-    }
-    const byId = new Map(found.map((m) => [m.id, m]));
-    const media = input.mediaIds.map((mediaId) => byId.get(mediaId)!);
-    const thumbnail = input.thumbnailMediaId ? byId.get(input.thumbnailMediaId)! : null;
-    for (const mediaId of imageIds) {
-      if (!byId.get(mediaId)!.mimeType.startsWith('image/')) {
-        throw badRequest('Featured images, thumbnails and images in the text must be images.');
-      }
-    }
-
-    if (input.status === 'scheduled') {
-      if (!input.scheduledAt) throw badRequest('Pick a date and time to schedule the post.');
-      if (!accounts.length) throw badRequest('Select at least one account to post to.');
-      const problems = accounts.flatMap((account) => {
-        if (account.status !== 'active') {
-          return [`${account.displayName}: reconnect this account first.`];
-        }
-        const problem = platformProblem(account.platform, { ...input, media, thumbnail });
-        return problem ? [`${account.displayName}: ${problem}`] : [];
-      });
-      if (problems.length) throw badRequest(problems.join('\n'));
-    }
-
-    const values = {
-      title: input.title,
-      body: input.body,
-      link: input.link,
-      featuredMediaId: input.featuredMediaId,
-      thumbnailMediaId: input.thumbnailMediaId,
-      wordpressOptions: input.wordpressOptions,
-      status: input.status,
-      scheduledAt: input.scheduledAt,
-    };
-    if (isNew) {
-      tx.insert(post)
-        .values({ id, userId, ...values })
-        .run();
-    } else {
-      tx.update(post).set(values).where(eq(post.id, id)).run();
-    }
-
-    // Keep target rows for accounts that stay selected; they have not started yet.
-    const kept = new Set(
-      tx
-        .select({ accountId: postTarget.socialAccountId })
-        .from(postTarget)
-        .where(eq(postTarget.postId, id))
-        .all()
-        .map((t) => t.accountId),
-    );
-    const removed = [...kept].filter((accountId) => !input.accountIds.includes(accountId));
-    if (removed.length) {
-      tx.delete(postTarget)
-        .where(and(eq(postTarget.postId, id), inArray(postTarget.socialAccountId, removed)))
-        .run();
-    }
-    for (const account of accounts) {
-      if (kept.has(account.id)) continue;
-      tx.insert(postTarget)
-        .values({
-          id: randomUUID(),
-          postId: id,
-          socialAccountId: account.id,
-          status: isManualPlatform(account.platform) ? 'manual' : 'pending',
-        })
-        .run();
-    }
-
-    tx.delete(postMedia).where(eq(postMedia.postId, id)).run();
-    const uniqueMedia = [...new Set(input.mediaIds)];
-    if (uniqueMedia.length) {
-      tx.insert(postMedia)
-        .values(uniqueMedia.map((mediaId, position) => ({ postId: id, mediaId, position })))
-        .run();
-    }
-  });
-  return loadPosts(db, userId, [id])[0]!;
+interface Selection {
+  accounts: Array<{
+    id: string;
+    platform: Platform;
+    displayName: string;
+    status: 'active' | 'expired' | 'revoked';
+  }>;
+  media: Map<string, { id: string; mimeType: string; sizeBytes: number }>;
 }
 
-/** A target of one of the caller's posts, or NOT_FOUND. */
-function ownTarget(db: Db, userId: string, targetId: string) {
-  const row = db
+/** Images referenced outside the attachments: featured image, thumbnail, images in the text. */
+const imageIdsOf = (input: PostInput) =>
+  [input.featuredMediaId, input.thumbnailMediaId, ...inlineMediaIds(input.body)].filter(
+    (mediaId): mediaId is string => mediaId !== null,
+  );
+
+/** The owner's accounts and media that this post refers to. */
+function readSelection(db: Db, userId: string, input: PostInput): Selection {
+  const accounts = input.accountIds.length
+    ? db
+        .select({
+          id: socialAccount.id,
+          platform: socialAccount.platform,
+          displayName: socialAccount.displayName,
+          status: socialAccount.status,
+        })
+        .from(socialAccount)
+        .where(and(eq(socialAccount.userId, userId), inArray(socialAccount.id, input.accountIds)))
+        .all()
+    : [];
+  const mediaIds = [...new Set([...input.mediaIds, ...imageIdsOf(input)])];
+  const found = mediaIds.length
+    ? db
+        .select({
+          id: mediaAsset.id,
+          mimeType: mediaAsset.mimeType,
+          sizeBytes: mediaAsset.sizeBytes,
+        })
+        .from(mediaAsset)
+        .where(and(eq(mediaAsset.userId, userId), inArray(mediaAsset.id, mediaIds)))
+        .all()
+    : [];
+  return { accounts, media: new Map(found.map((m) => [m.id, m])) };
+}
+
+/** Why this post can't be saved as asked, or null. Scheduling is checked against every platform. */
+function problemWith(input: PostInput, { accounts, media }: Selection): string | null {
+  if (accounts.length !== new Set(input.accountIds).size) {
+    return 'One of the selected accounts no longer exists.';
+  }
+  const imageIds = imageIdsOf(input);
+  if ([...input.mediaIds, ...imageIds].some((mediaId) => !media.has(mediaId))) {
+    return 'One of the attached files no longer exists.';
+  }
+  if (imageIds.some((mediaId) => !media.get(mediaId)!.mimeType.startsWith('image/'))) {
+    return 'Featured images, thumbnails and images in the text must be images.';
+  }
+  if (input.status !== 'scheduled') return null;
+  if (!input.scheduledAt) return 'Pick a date and time to schedule the post.';
+  if (!accounts.length) return 'Select at least one account to post to.';
+
+  const attached = input.mediaIds.map((mediaId) => media.get(mediaId)!);
+  const thumbnail = input.thumbnailMediaId ? media.get(input.thumbnailMediaId)! : null;
+  const problems = accounts.flatMap((account) => {
+    if (account.status !== 'active')
+      return [`${account.displayName}: reconnect this account first.`];
+    const problem = platformProblem(account.platform, { ...input, media: attached, thumbnail });
+    return problem ? [`${account.displayName}: ${problem}`] : [];
+  });
+  return problems.length ? problems.join('\n') : null;
+}
+
+/** Writes the post, its targets (kept for accounts that stay selected) and its media order. */
+function writePost(
+  db: Db,
+  userId: string,
+  id: string,
+  input: PostInput,
+  isNew: boolean,
+  accounts: Selection['accounts'],
+) {
+  const values = {
+    title: input.title.trim(),
+    body: input.body,
+    link: input.link,
+    featuredMediaId: input.featuredMediaId,
+    thumbnailMediaId: input.thumbnailMediaId,
+    wordpressOptions: input.wordpressOptions
+      ? { ...input.wordpressOptions, tags: input.wordpressOptions.tags.map((tag) => tag.trim()) }
+      : null,
+    status: input.status,
+    scheduledAt: input.scheduledAt,
+  };
+  if (isNew) {
+    db.insert(post)
+      .values({ id, userId, ...values })
+      .run();
+  } else {
+    db.update(post).set(values).where(eq(post.id, id)).run();
+  }
+
+  // Keep target rows for accounts that stay selected; they have not started yet.
+  const kept = new Set(
+    db
+      .select({ accountId: postTarget.socialAccountId })
+      .from(postTarget)
+      .where(eq(postTarget.postId, id))
+      .all()
+      .map((t) => t.accountId),
+  );
+  const removed = [...kept].filter((accountId) => !input.accountIds.includes(accountId));
+  if (removed.length) {
+    db.delete(postTarget)
+      .where(and(eq(postTarget.postId, id), inArray(postTarget.socialAccountId, removed)))
+      .run();
+  }
+  for (const account of accounts) {
+    if (kept.has(account.id)) continue;
+    db.insert(postTarget)
+      .values({
+        id: randomUUID(),
+        postId: id,
+        socialAccountId: account.id,
+        status: isManualPlatform(account.platform) ? 'manual' : 'pending',
+      })
+      .run();
+  }
+
+  db.delete(postMedia).where(eq(postMedia.postId, id)).run();
+  const uniqueMedia = [...new Set(input.mediaIds)];
+  if (uniqueMedia.length) {
+    db.insert(postMedia)
+      .values(uniqueMedia.map((mediaId, position) => ({ postId: id, mediaId, position })))
+      .run();
+  }
+}
+
+/** A target of one of the caller's posts, or undefined. */
+function findOwnTarget(db: Db, userId: string, targetId: string) {
+  return db
     .select({ target: postTarget, postStatus: post.status })
     .from(postTarget)
     .innerJoin(post, eq(post.id, postTarget.postId))
     .where(and(eq(postTarget.id, targetId), eq(post.userId, userId)))
     .get();
-  if (!row) throw new ORPCError('NOT_FOUND');
-  return row;
 }
 
-export const postsRouter = {
-  list: protectedProcedure.handler(({ context }) => loadPosts(context.db, context.user.id)),
+const isEditable = (status: string) => (EDITABLE_STATUSES as readonly string[]).includes(status);
 
-  // Client supplies the id so TanStack DB can insert optimistically.
-  create: protectedProcedure
-    .input(postFields.partial().required({ title: true }).extend({ id: z.uuid() }))
-    .handler(({ context, input }) =>
-      savePost(
-        context.db,
-        context.user.id,
-        input.id,
-        {
-          title: input.title,
-          body: input.body ?? '',
-          link: input.link ?? null,
-          status: input.status ?? 'draft',
-          scheduledAt: input.scheduledAt ?? null,
-          accountIds: input.accountIds ?? [],
-          mediaIds: input.mediaIds ?? [],
-          featuredMediaId: input.featuredMediaId ?? null,
-          thumbnailMediaId: input.thumbnailMediaId ?? null,
-          wordpressOptions: input.wordpressOptions ?? null,
-        },
-        true,
-      ),
-    ),
+export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
+  Effect.gen(function* () {
+    const { query, transaction } = handlerDatabase(yield* Database);
 
-  update: protectedProcedure
-    .input(z.object({ id: z.string(), changes: postFields.partial() }))
-    .handler(({ context, input }) => {
-      const [current] = loadPosts(context.db, context.user.id, [input.id]);
-      if (!current) throw new ORPCError('NOT_FOUND');
-      if (!(EDITABLE_STATUSES as readonly string[]).includes(current.status)) {
-        throw new ORPCError('CONFLICT', {
-          message: 'This post has already started publishing and can no longer be edited.',
-        });
-      }
-      return savePost(
-        context.db,
-        context.user.id,
-        input.id,
-        {
-          title: current.title,
-          body: current.body,
-          link: current.link,
-          status: current.status as PostInput['status'],
-          scheduledAt: current.scheduledAt,
-          accountIds: current.accountIds,
-          mediaIds: current.mediaIds,
-          featuredMediaId: current.featuredMediaId,
-          thumbnailMediaId: current.thumbnailMediaId,
-          wordpressOptions: current.wordpressOptions,
-          ...input.changes,
-        },
-        false,
+    const loadPost = (userId: string, id: string) =>
+      Effect.flatMap(
+        query((db) => loadPosts(db, userId, [id])[0]),
+        (found) => (found ? Effect.succeed(found) : Effect.fail(notFound())),
       );
-    }),
 
-  delete: protectedProcedure.input(z.object({ id: z.string() })).handler(({ context, input }) => {
-    const publishing = context.db
-      .select({ id: postTarget.id })
-      .from(postTarget)
-      .innerJoin(post, eq(post.id, postTarget.postId))
-      .where(
-        and(
-          eq(post.id, input.id),
-          eq(post.userId, context.user.id),
-          eq(postTarget.status, 'publishing'),
+    /** Creates or updates a post with its targets and media, all or nothing. */
+    const savePost = (userId: string, id: string, input: PostInput, isNew: boolean) =>
+      transaction(
+        Effect.gen(function* () {
+          const selection = yield* query((db) => readSelection(db, userId, input));
+          const problem = problemWith(input, selection);
+          if (problem) return yield* badRequest(problem);
+          yield* query((db) => writePost(db, userId, id, input, isNew, selection.accounts));
+          return yield* loadPost(userId, id);
+        }),
+      );
+
+    const ownTarget = (userId: string, targetId: string) =>
+      Effect.flatMap(
+        query((db) => findOwnTarget(db, userId, targetId)),
+        (found) => (found ? Effect.succeed(found) : Effect.fail(notFound())),
+      );
+
+    return handlers.handleAll({
+      list: () => Effect.flatMap(CurrentUser, (user) => query((db) => loadPosts(db, user.id))),
+
+      // The client supplies the id so TanStack DB can insert optimistically.
+      create: ({ payload: input }) =>
+        Effect.flatMap(CurrentUser, (user) =>
+          savePost(
+            user.id,
+            input.id,
+            {
+              title: input.title,
+              body: input.body ?? '',
+              link: input.link ?? null,
+              status: input.status ?? 'draft',
+              scheduledAt: input.scheduledAt ?? null,
+              accountIds: input.accountIds ?? [],
+              mediaIds: input.mediaIds ?? [],
+              featuredMediaId: input.featuredMediaId ?? null,
+              thumbnailMediaId: input.thumbnailMediaId ?? null,
+              wordpressOptions: input.wordpressOptions ?? null,
+            },
+            true,
+          ),
         ),
-      )
-      .get();
-    if (publishing) {
-      throw new ORPCError('CONFLICT', {
-        message: 'This post is publishing right now. Try again in a moment.',
-      });
-    }
-    context.db
-      .delete(post)
-      .where(and(eq(post.id, input.id), eq(post.userId, context.user.id)))
-      .run();
-    return { id: input.id };
+
+      update: ({ payload: input }) =>
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const current = yield* loadPost(user.id, input.id);
+            if (!isEditable(current.status)) {
+              return yield* conflict(
+                'This post has already started publishing and can no longer be edited.',
+              );
+            }
+            return yield* savePost(
+              user.id,
+              input.id,
+              {
+                title: current.title,
+                body: current.body,
+                link: current.link,
+                status: current.status as PostInput['status'],
+                scheduledAt: current.scheduledAt,
+                accountIds: current.accountIds,
+                mediaIds: current.mediaIds,
+                featuredMediaId: current.featuredMediaId,
+                thumbnailMediaId: current.thumbnailMediaId,
+                wordpressOptions: current.wordpressOptions,
+                ...input.changes,
+              },
+              false,
+            );
+          }),
+        ),
+
+      delete: ({ payload: input }) =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser;
+          return yield* transaction(
+            Effect.gen(function* () {
+              const publishing = yield* query((db) =>
+                db
+                  .select({ id: postTarget.id })
+                  .from(postTarget)
+                  .innerJoin(post, eq(post.id, postTarget.postId))
+                  .where(
+                    and(
+                      eq(post.id, input.id),
+                      eq(post.userId, user.id),
+                      eq(postTarget.status, 'publishing'),
+                    ),
+                  )
+                  .get(),
+              );
+              if (publishing) {
+                return yield* conflict('This post is publishing right now. Try again in a moment.');
+              }
+              yield* query((db) =>
+                db
+                  .delete(post)
+                  .where(and(eq(post.id, input.id), eq(post.userId, user.id)))
+                  .run(),
+              );
+              return { id: input.id };
+            }),
+          );
+        }),
+
+      retry: ({ payload: input }) =>
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const { target } = yield* ownTarget(user.id, input.targetId);
+            if (target.status !== 'failed')
+              return yield* conflict('Only failed posts can be retried.');
+            yield* query((db) => {
+              db.update(postTarget)
+                .set({ status: 'pending', nextAttemptAt: null, lastError: null })
+                .where(eq(postTarget.id, target.id))
+                .run();
+              refreshPostStatus(db, target.postId);
+            });
+            return yield* loadPost(user.id, target.postId);
+          }),
+        ),
+
+      markPosted: ({ payload: input }) =>
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const publishedAt = new Date(yield* Clock.currentTimeMillis);
+            const { target, postStatus } = yield* ownTarget(user.id, input.targetId);
+            if (target.status !== 'manual') {
+              return yield* conflict('This target is published automatically.');
+            }
+            yield* query((db) => {
+              db.update(postTarget)
+                .set({ status: 'published', externalUrl: input.url ?? null, publishedAt })
+                .where(eq(postTarget.id, target.id))
+                .run();
+              if (postStatus !== 'draft' && postStatus !== 'scheduled') {
+                refreshPostStatus(db, target.postId);
+              }
+            });
+            return yield* loadPost(user.id, target.postId);
+          }),
+        ),
+    });
   }),
-
-  /** Queue a failed target again. The publisher picks it up on its next pass. */
-  retry: protectedProcedure
-    .input(z.object({ targetId: z.string() }))
-    .handler(({ context, input }) => {
-      const { target } = ownTarget(context.db, context.user.id, input.targetId);
-      if (target.status !== 'failed') {
-        throw new ORPCError('CONFLICT', { message: 'Only failed posts can be retried.' });
-      }
-      context.db.transaction((tx) => {
-        tx.update(postTarget)
-          .set({ status: 'pending', nextAttemptAt: null, lastError: null })
-          .where(eq(postTarget.id, target.id))
-          .run();
-        refreshPostStatus(tx, target.postId);
-      });
-      return loadPosts(context.db, context.user.id, [target.postId])[0]!;
-    }),
-
-  /** The owner posted a manual-handoff target (TikTok) themselves. */
-  markPosted: protectedProcedure
-    .input(z.object({ targetId: z.string(), url: z.url().max(2000).optional() }))
-    .handler(({ context, input }) => {
-      const { target, postStatus } = ownTarget(context.db, context.user.id, input.targetId);
-      if (target.status !== 'manual') {
-        throw new ORPCError('CONFLICT', { message: 'This target is published automatically.' });
-      }
-      context.db.transaction((tx) => {
-        tx.update(postTarget)
-          .set({ status: 'published', externalUrl: input.url ?? null, publishedAt: new Date() })
-          .where(eq(postTarget.id, target.id))
-          .run();
-        if (postStatus !== 'draft' && postStatus !== 'scheduled') {
-          refreshPostStatus(tx, target.postId);
-        }
-      });
-      return loadPosts(context.db, context.user.id, [target.postId])[0]!;
-    }),
-};
+);

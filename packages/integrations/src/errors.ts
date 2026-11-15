@@ -1,3 +1,5 @@
+import { Schema } from 'effect';
+
 export interface PlatformErrorOptions {
   status?: number;
   body?: unknown;
@@ -5,21 +7,36 @@ export interface PlatformErrorOptions {
   retryable?: boolean;
 }
 
-/** Any failure talking to a platform. `retryable` tells the publisher whether to try again. */
-export class PlatformError extends Error {
-  readonly source: string;
-  readonly status: number | undefined;
-  readonly body: unknown;
-  readonly retryable: boolean;
+/**
+ * A platform said no (or we know the attempt did not happen). `retryable` tells the publisher
+ * whether to try again. Network failures are not PlatformErrors: their outcome is unknown.
+ */
+export class PlatformError extends Schema.TaggedError<PlatformError>()('PlatformError', {
+  source: Schema.String,
+  message: Schema.String,
+  status: Schema.optional(Schema.Number),
+  body: Schema.optional(Schema.Unknown),
+  retryable: Schema.Boolean,
+}) {}
 
-  constructor(source: string, message: string, options: PlatformErrorOptions = {}) {
-    super(`${source}: ${message}`);
-    this.name = 'PlatformError';
-    this.source = source;
-    this.status = options.status;
-    this.body = options.body;
-    this.retryable =
+/** Builds a PlatformError whose message is prefixed with its source, e.g. "youtube: ...". */
+export const platformError = (
+  source: string,
+  message: string,
+  options: PlatformErrorOptions = {},
+): PlatformError =>
+  new PlatformError({
+    source,
+    message: `${source}: ${message}`,
+    status: options.status,
+    body: options.body,
+    retryable:
       options.retryable ??
-      (options.status !== undefined && (options.status === 429 || options.status >= 500));
-  }
-}
+      (options.status !== undefined && (options.status === 429 || options.status >= 500)),
+  });
+
+/** The platform's message without the "source: " prefix. */
+export const reason = (error: PlatformError) =>
+  error.message.startsWith(`${error.source}: `)
+    ? error.message.slice(error.source.length + 2)
+    : error.message;

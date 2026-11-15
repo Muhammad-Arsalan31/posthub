@@ -1,33 +1,26 @@
-import { ORPCError } from '@orpc/server';
-import { z } from 'zod';
-import { OAUTH_PROVIDER_IDS, ProviderAppError } from '../provider-apps';
-import { protectedProcedure } from '../procedures';
+import { Api, BadRequest } from '@posthub/contract';
+import { Effect } from 'effect';
+import { HttpApiBuilder } from 'effect/http-api';
+import { ProviderApps } from '../provider-apps';
 
-const provider = z.enum(OAUTH_PROVIDER_IDS);
+export const ProviderAppsHandlers = HttpApiBuilder.group(Api, 'providerApps', (handlers) =>
+  Effect.gen(function* () {
+    const providerApps = yield* ProviderApps;
 
-export const providerAppsRouter = {
-  save: protectedProcedure
-    .input(
-      z.object({
-        provider,
-        clientId: z.string().trim().min(1).max(500),
-        clientSecret: z.string().trim().max(500).optional(),
-      }),
-    )
-    .handler(({ context, input }) => {
-      try {
-        context.providerApps.save(input.provider, input);
-      } catch (error) {
-        if (error instanceof ProviderAppError) {
-          throw new ORPCError('BAD_REQUEST', { message: error.message });
-        }
-        throw error;
-      }
-      return { provider: input.provider };
-    }),
+    return handlers.handleAll({
+      save: ({ payload }) =>
+        providerApps.save(payload.provider, payload).pipe(
+          Effect.catchTag('ProviderAppError', (error) =>
+            Effect.fail(new BadRequest({ message: error.message })),
+          ),
+          Effect.catchTag('DatabaseError', (error) => Effect.die(error)),
+          Effect.as({ provider: payload.provider }),
+        ),
 
-  remove: protectedProcedure.input(z.object({ provider })).handler(({ context, input }) => {
-    context.providerApps.remove(input.provider);
-    return { provider: input.provider };
+      remove: ({ payload }) =>
+        providerApps
+          .remove(payload.provider)
+          .pipe(Effect.orDie, Effect.as({ provider: payload.provider })),
+    });
   }),
-};
+);
