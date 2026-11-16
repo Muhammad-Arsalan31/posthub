@@ -58,6 +58,7 @@ app bundles them via Vite, and the server bundles them with `vp pack` (`deps.alw
 | Install                           | `pnpm install`                         |
 | Dev (web :5173 + api :4100)       | `pnpm dev`                             |
 | Lint + format + type check        | `pnpm check` (fix: `pnpm check:fix`)   |
+| Unused files, exports and deps    | `pnpm knip` (config: `knip.jsonc`)     |
 | All tests                         | `pnpm test`                            |
 | One package's tests               | `pnpm --filter @posthub/api test`      |
 | Build                             | `pnpm build`                           |
@@ -69,7 +70,8 @@ app bundles them via Vite, and the server bundles them with `vp pack` (`deps.alw
 The global `vp` CLI may not be installed, so use `pnpm exec vp ...`. Use `vpx` to run TS files; do
 not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run <name>` runs a script.
 
-**Before finishing any change, run `pnpm check` and `pnpm test`. Both must pass.**
+**Before finishing any change, run `pnpm check`, `pnpm knip` and `pnpm test`. All must pass.** Fix knip findings by
+removing the dead code or dependency; add an ignore to `knip.jsonc` only for genuine false positives, with a comment.
 
 ## How requests flow
 
@@ -220,4 +222,6 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
 - `apps/server/.env` (copy from `.env.example`) needs `BETTER_AUTH_SECRET` and `POSTHUB_ENCRYPTION_KEY` (32+ chars each),
   Connector app credentials are optional here (the Accounts page is preferred). Never commit `.env`.
 - Data lives in `<repo>/.data/` in dev (`POSTHUB_DATA_DIR` overrides it): `posthub.db` and `media/`.
+- Line endings are LF everywhere (`.gitattributes`, `.editorconfig`, Oxfmt `endOfLine`), even with `core.autocrlf=true`.
+  An older checkout with CRLF files is fixed by `git rm --cached -r . && git reset --hard` (commit or stash first).
 - On Windows, shell `python` may be the Microsoft Store stub and hang, so use Node for scripting.

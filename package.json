@@ -17,10 +17,12 @@
     "db:generate": "pnpm --filter @posthub/db db:generate",
     "db:migrate": "pnpm --filter @posthub/db db:migrate",
     "db:studio": "pnpm --filter @posthub/db db:studio",
-    "release": "vpx packages/release/src/cli.ts"
+    "release": "vpx packages/release/src/cli.ts",
+    "knip": "knip"
   },
   "devDependencies": {
     "@types/node": "catalog:",
+    "knip": "catalog:",
     "turbo": "catalog:",
     "typescript": "catalog:",
     "vite-plus": "catalog:"

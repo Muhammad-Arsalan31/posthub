@@ -1,0 +1,16 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  // Workspaces, entry points and plugins (vite-plus, Vitest, TanStack Router, PWA, Drizzle,
+  // Turborepo, GitHub Actions) are detected automatically; only list what knip can't infer.
+  "ignoreExportsUsedInFile": true,
+  "workspaces": {
+    "apps/server": {
+      // Native module kept external by `vp pack` (neverBundle), so the bundle requires it at runtime.
+      "ignoreDependencies": ["better-sqlite3"],
+    },
+    "apps/web": {
+      // Installed up front as part of the Mantine toolkit (see AGENTS.md), not imported yet.
+      "ignoreDependencies": ["@mantine/form"],
+    },
+  },
+}
