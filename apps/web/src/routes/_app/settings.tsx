@@ -4,17 +4,20 @@ import {
   Badge,
   Button,
   Card,
+  CloseButton,
   Group,
   List,
   PasswordInput,
+  Select,
   Stack,
   Text,
   TextInput,
   Title,
 } from '@mantine/core';
+import { TimeInput } from '@mantine/dates';
 import { useForm } from '@mantine/form';
 import { notifications } from '@mantine/notifications';
-import type { MediaHostSettings } from '@posthub/contract';
+import type { MediaHostSettings, QueueSlot } from '@posthub/contract';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
@@ -26,8 +29,139 @@ function SettingsPage() {
   return (
     <Stack maw={720}>
       <Title order={2}>Settings</Title>
+      <QueueSlotsCard />
       <MediaHostCard />
     </Stack>
+  );
+}
+
+const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+/** Monday first. */
+const WEEKDAY_ORDER = [1, 2, 3, 4, 5, 6, 0];
+const browserTimeZone = () => Intl.DateTimeFormat().resolvedOptions().timeZone;
+const formatMinute = (minute: number) =>
+  `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')}`;
+
+/** Weekly posting times that "Add to queue" fills, in order. */
+function QueueSlotsCard() {
+  const queryClient = useQueryClient();
+  const queue = useQuery(api.queue.slots.queryOptions());
+  // Unsaved edits; null shows what is saved.
+  const [slots, setSlots] = useState<QueueSlot[] | null>(null);
+  const [weekday, setWeekday] = useState('1');
+  const [time, setTime] = useState('09:00');
+  const current = slots ?? queue.data?.slots ?? [];
+  const timezone = browserTimeZone();
+  const zoneChanged = Boolean(queue.data && queue.data.timezone !== timezone);
+
+  const save = useMutation(
+    api.queue.saveSlots.mutationOptions({
+      onSuccess: async () => {
+        setSlots(null);
+        await queryClient.invalidateQueries({ queryKey: api.queue.key() });
+        notifications.show({ color: 'green', message: 'Posting times saved.' });
+      },
+    }),
+  );
+
+  function add(days: number[]) {
+    const [hours, minutes] = time.split(':').map(Number);
+    if (hours === undefined || minutes === undefined || Number.isNaN(hours + minutes)) return;
+    const minuteOfDay = hours * 60 + minutes;
+    const next = [...current];
+    for (const day of days) {
+      if (!next.some((s) => s.weekday === day && s.minuteOfDay === minuteOfDay)) {
+        next.push({ weekday: day, minuteOfDay, socialAccountId: null });
+      }
+    }
+    setSlots(next);
+  }
+
+  return (
+    <Card withBorder padding="lg">
+      <Stack>
+        <Title order={4}>Posting times</Title>
+        <Text size="sm" c="dimmed">
+          Weekly times for <b>Add to queue</b>: a queued post goes out at the next time no other
+          scheduled post has. Times are in <b>{zoneChanged ? queue.data!.timezone : timezone}</b>
+          {zoneChanged && <> (saving switches them to {timezone})</>}.
+        </Text>
+
+        <Group align="flex-end" gap="xs">
+          <Select
+            label="Day"
+            value={weekday}
+            onChange={(value) => setWeekday(value ?? '1')}
+            data={WEEKDAY_ORDER.map((d) => ({ value: String(d), label: WEEKDAYS[d]! }))}
+            w={150}
+            allowDeselect={false}
+          />
+          <TimeInput
+            label="Time"
+            value={time}
+            onChange={(e) => setTime(e.currentTarget.value)}
+            w={110}
+          />
+          <Button variant="default" onClick={() => add([Number(weekday)])}>
+            Add
+          </Button>
+          <Button variant="subtle" onClick={() => add([1, 2, 3, 4, 5])}>
+            Add on weekdays
+          </Button>
+        </Group>
+
+        {current.length === 0 ? (
+          <Text size="sm" c="dimmed" fs="italic">
+            No posting times yet.
+          </Text>
+        ) : (
+          <Stack gap={6}>
+            {WEEKDAY_ORDER.filter((d) => current.some((s) => s.weekday === d)).map((d) => (
+              <Group key={d} gap="xs">
+                <Text size="sm" w={100}>
+                  {WEEKDAYS[d]}
+                </Text>
+                {current
+                  .filter((s) => s.weekday === d)
+                  .sort((a, b) => a.minuteOfDay - b.minuteOfDay)
+                  .map((slot) => (
+                    <Badge
+                      key={slot.minuteOfDay}
+                      variant="light"
+                      pr={3}
+                      rightSection={
+                        <CloseButton
+                          size="xs"
+                          aria-label={`Remove ${WEEKDAYS[d]} ${formatMinute(slot.minuteOfDay)}`}
+                          onClick={() => setSlots(current.filter((s) => s !== slot))}
+                        />
+                      }
+                    >
+                      {formatMinute(slot.minuteOfDay)}
+                    </Badge>
+                  ))}
+              </Group>
+            ))}
+          </Stack>
+        )}
+
+        {save.error && <Alert color="red">{save.error.message}</Alert>}
+        <Group>
+          <Button
+            onClick={() => save.mutate({ timezone, slots: current })}
+            loading={save.isPending}
+            disabled={slots === null && !zoneChanged}
+          >
+            Save posting times
+          </Button>
+          {slots !== null && (
+            <Button variant="subtle" onClick={() => setSlots(null)}>
+              Discard changes
+            </Button>
+          )}
+        </Group>
+      </Stack>
+    </Card>
   );
 }
 

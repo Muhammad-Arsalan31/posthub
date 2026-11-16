@@ -10,6 +10,7 @@ import { AccountsHandlers } from './routers/accounts';
 import { MediaHandlers } from './routers/media';
 import { PostsHandlers } from './routers/posts';
 import { ProviderAppsHandlers } from './routers/provider-apps';
+import { QueueHandlers } from './routers/queue';
 import { SettingsHandlers } from './routers/settings';
 import { SystemHandlers } from './routers/system';
 
@@ -25,6 +26,7 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     AccountsHandlers,
     ProviderAppsHandlers,
     SettingsHandlers,
+    QueueHandlers,
   ]),
   Layer.provide([AuthorizationLive, InputValidationLive]),
 );

@@ -13,6 +13,7 @@ import {
   Text,
   TextInput,
   Title,
+  Tooltip,
 } from '@mantine/core';
 import { DateTimePicker } from '@mantine/dates';
 import { useDisclosure } from '@mantine/hooks';
@@ -22,7 +23,7 @@ import { Link } from '@tanstack/react-router';
 import dayjs from 'dayjs';
 import { useMemo, useState } from 'react';
 import { postsCollection, type Post } from '../collections/posts';
-import { api } from '../lib/api';
+import { api, client } from '../lib/api';
 import {
   PLATFORM_COLORS,
   PLATFORM_LABELS,
@@ -42,7 +43,7 @@ import {
   useUploadMedia,
 } from './media';
 
-type Action = 'draft' | 'schedule' | 'now';
+type Action = 'draft' | 'schedule' | 'now' | 'queue';
 
 const isHttpUrl = (value: string) => {
   try {
@@ -71,7 +72,13 @@ function wordpressOptionsFor(value: WordPressOptionsValue, accountIds: string[])
 }
 
 /** Composer for a new post or an existing draft/scheduled post. */
-export function PostEditor(props: { post?: Post; userId: string; onDone: () => void }) {
+export function PostEditor(props: {
+  post?: Post;
+  userId: string;
+  /** Publish time for a new post (e.g. the day clicked on the calendar). */
+  initialScheduledAt?: Date;
+  onDone: () => void;
+}) {
   const existing = props.post;
   const [title, setTitle] = useState(existing?.title ?? '');
   const [body, setBody] = useState(existing?.body ?? '');
@@ -85,7 +92,9 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
   const [accountIds, setAccountIds] = useState<string[]>(existing?.accountIds ?? []);
   const [mediaIds, setMediaIds] = useState<string[]>(existing?.mediaIds ?? []);
   const [scheduledAt, setScheduledAt] = useState<Date | null>(
-    existing?.scheduledAt ?? dayjs().add(1, 'hour').startOf('hour').toDate(),
+    existing?.scheduledAt ??
+      props.initialScheduledAt ??
+      dayjs().add(1, 'hour').startOf('hour').toDate(),
   );
   const [saving, setSaving] = useState<Action | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +105,8 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
   const accounts = useQuery(api.accounts.list.queryOptions());
   const mediaList = useQuery(api.media.list.queryOptions());
   const mediaHost = useQuery(api.settings.mediaHost.queryOptions());
+  const queue = useQuery(api.queue.slots.queryOptions());
+  const hasQueue = Boolean(queue.data?.slots.length);
   const { upload, uploading } = useUploadMedia();
 
   const mediaById = useMemo(() => {
@@ -158,25 +169,36 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
       featuredMediaId,
       thumbnailMediaId,
       wordpressOptions: wordpressOptionsFor(wordpress, accountIds),
-      status: action === 'draft' ? ('draft' as const) : ('scheduled' as const),
-      scheduledAt: action === 'draft' ? scheduledAt : when,
+      // Queued posts are saved as drafts first; the server then picks the slot.
+      status:
+        action === 'draft' || action === 'queue' ? ('draft' as const) : ('scheduled' as const),
+      scheduledAt:
+        action === 'draft' || action === 'queue' ? (existing?.scheduledAt ?? null) : when,
     };
 
     setSaving(action);
     try {
+      const id = existing?.id ?? crypto.randomUUID();
       const tx = existing
         ? postsCollection.update(existing.id, (draft) => {
             Object.assign(draft, values);
           })
         : postsCollection.insert({
             ...values,
-            id: crypto.randomUUID(),
+            id,
             userId: props.userId,
             targets: [],
             createdAt: now,
             updatedAt: now,
           });
       await tx.when('settled');
+      let queuedAt: Date | null = null;
+      if (action === 'queue') {
+        // Validated like scheduling; a failure leaves the post saved as a draft.
+        const queued = await client.posts.enqueue({ postId: id });
+        queuedAt = queued.scheduledAt;
+        await postsCollection.utils.refetch();
+      }
       notifications.show({
         color: 'green',
         message:
@@ -184,7 +206,7 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
             ? 'Draft saved.'
             : action === 'now'
               ? 'Publishing now. Status updates appear on the Posts page.'
-              : `Scheduled for ${dayjs(when).format('ddd D MMM, HH:mm')}.`,
+              : `Scheduled for ${dayjs(queuedAt ?? when).format('ddd D MMM, HH:mm')}.`,
       });
       props.onDone();
     } catch (err) {
@@ -398,6 +420,22 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
               >
                 Publish now
               </Button>
+              <Tooltip
+                label={
+                  hasQueue
+                    ? 'Schedule at the next free posting time'
+                    : 'Add posting times in Settings first'
+                }
+              >
+                <Button
+                  variant="light"
+                  onClick={() => void save('queue')}
+                  loading={saving === 'queue'}
+                  disabled={!canPublish || !hasQueue || (saving !== null && saving !== 'queue')}
+                >
+                  Add to queue
+                </Button>
+              </Tooltip>
               <Button
                 variant="default"
                 onClick={() => void save('draft')}

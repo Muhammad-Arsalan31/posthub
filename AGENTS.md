@@ -40,6 +40,7 @@ packages/api/        HttpApi handlers (routers/<area>.ts, assembled in src/route
   src/publisher.ts   Publisher service + publisherWorker layer (background publishing, run by the server)
   src/settings.ts    per-user `app_setting` rows (JSON, vault-encrypted when secret)
   src/media-hosts.ts MediaHosts service: the owner's media host (S3 bucket), read per use
+  src/queue.ts       posting slots: nextSlotTime() (pure, DST-aware) and findNextSlot(db, ...)
   src/post-rules.ts  what each platform can publish; checked before a post is scheduled
   src/testing.ts     testContext(), sessionFor() for handler tests (@posthub/api/testing)
 packages/integrations/  platform connectors: no DB access, injectable fetch
@@ -128,8 +129,8 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
 - For non-collection data, use `api.<group>.<endpoint>.queryOptions()` / `.mutationOptions()` from `src/lib/api.ts`,
   and `api.<group>.key()` to invalidate. Errors are the contract's typed errors, with a user-facing `message`.
 - Signed-in pages live under `src/routes/_app/` (the guard is in `_app.tsx`). Use Mantine components; don't add CSS frameworks.
-- Installed Mantine extensions: form, dates (+dayjs), charts (+recharts), notifications, modals, tiptap
-  (+StarterKit, Link), dropzone, emoji. Their CSS and providers are already wired in `src/providers.tsx`.
+- Installed Mantine extensions: form, dates (+dayjs), schedule (the calendar page), charts (+recharts), notifications,
+  modals, tiptap (+StarterKit, Link), dropzone, emoji. Keep every `@mantine/*` on the same version: schedule pins its peers exactly. Their CSS and providers are already wired in `src/providers.tsx`.
   Use `notifications.show()` and `modals.openConfirmModal()` directly.
 - Test files sit next to routes and are excluded from routing via `routeFileIgnorePattern` in `vite.config.ts`.
 
@@ -206,6 +207,9 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
   them (they only get attached media). `post.wordpressOptions` holds tags (names, created on the site if missing) and
   categories per WordPress account id.
 - When changing what an adapter accepts, update `packages/api/src/post-rules.ts` and `apps/web/src/lib/platforms.ts` together.
+- **Queue:** `queue_slot` rows are weekly wall-clock times in the owner's time zone (`app_setting` key `timezone`, sent by
+  the browser when slots are saved). `posts.enqueue` picks the first future slot no scheduled post has, inside one
+  synchronous transaction, so concurrent enqueues get different slots.
 - Shutdown: Ctrl+C/SIGTERM interrupts the program; the publisher's scope waits for jobs in progress.
 - Planned next: LinkedIn video, then a Windows startup/Electron shell.
 

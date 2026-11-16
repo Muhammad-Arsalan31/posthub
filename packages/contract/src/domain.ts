@@ -145,3 +145,34 @@ export const MediaHostSettings = Schema.Struct({
   publicBaseUrl: Schema.NullOr(Schema.String),
 });
 export type MediaHostSettings = typeof MediaHostSettings.Type;
+
+/** A weekly posting time in the owner's time zone. A null account means any account. */
+export const QueueSlot = Schema.Struct({
+  /** 0 = Sunday ... 6 = Saturday. */
+  weekday: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 0, maximum: 6 })),
+  minuteOfDay: Schema.Number.check(
+    Schema.isInt(),
+    Schema.isBetween({ minimum: 0, maximum: 24 * 60 - 1 }),
+  ),
+  socialAccountId: Schema.NullOr(Schema.String),
+});
+export type QueueSlot = typeof QueueSlot.Type;
+
+const isTimeZone = (value: string) => {
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: value });
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+export const TimeZone = Schema.String.check(
+  Schema.makeFilter(isTimeZone, { message: 'Unknown time zone.' }),
+);
+
+export const QueueSettings = Schema.Struct({
+  timezone: TimeZone,
+  slots: Schema.mutable(Schema.Array(QueueSlot)),
+});
+export type QueueSettings = typeof QueueSettings.Type;

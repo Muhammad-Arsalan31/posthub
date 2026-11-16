@@ -217,3 +217,25 @@ export const hostedMedia = sqliteTable(
   },
   (t) => [index('hosted_media_target_idx').on(t.targetId)],
 );
+
+/**
+ * A weekly posting time ("Mon 09:00") that "Add to queue" fills. The time is wall-clock time in
+ * the owner's time zone (`app_setting` key `timezone`). A null account means any account.
+ */
+export const queueSlot = sqliteTable(
+  'queue_slot',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    /** 0 = Sunday ... 6 = Saturday. */
+    weekday: integer('weekday').notNull(),
+    minuteOfDay: integer('minute_of_day').notNull(),
+    socialAccountId: text('social_account_id').references(() => socialAccount.id, {
+      onDelete: 'cascade',
+    }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('queue_slot_user_idx').on(t.userId)],
+);

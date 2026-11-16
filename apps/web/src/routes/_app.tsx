@@ -43,6 +43,7 @@ function AppLayout() {
       <AppShell.Navbar p="xs">
         <AppShell.Section grow>
           <NavLink component={Link} to="/" label="Posts" activeOptions={{ exact: false }} />
+          <NavLink component={Link} to="/calendar" label="Calendar" />
           <NavLink component={Link} to="/media" label="Media" />
           <NavLink component={Link} to="/accounts" label="Accounts" />
           <NavLink component={Link} to="/settings" label="Settings" />

@@ -19,6 +19,7 @@
     "@mantine/hooks": "catalog:",
     "@mantine/modals": "catalog:",
     "@mantine/notifications": "catalog:",
+    "@mantine/schedule": "catalog:",
     "@mantine/tiptap": "catalog:",
     "@posthub/contract": "workspace:*",
     "@tanstack/query-db-collection": "catalog:",

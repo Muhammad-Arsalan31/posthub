@@ -5,7 +5,7 @@ import type { VaultService } from '@posthub/integrations';
 import { and, eq } from 'drizzle-orm';
 import { Effect, Option } from 'effect';
 
-export type SettingKey = 'mediaHost' | 'queueSlots';
+export type SettingKey = 'mediaHost' | 'timezone';
 
 export const readSettingRow = (db: Db, userId: string, key: SettingKey) =>
   db

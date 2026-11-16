@@ -16,6 +16,7 @@ import { inlineMediaIds } from '../inline-media';
 import { MediaHosts } from '../media-hosts';
 import { isManualPlatform, platformProblem, type RuleOptions } from '../post-rules';
 import { refreshPostStatus } from '../publisher';
+import { findNextSlot } from '../queue';
 import { Database } from '../services';
 
 type PostInput = PostFields;
@@ -354,6 +355,47 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
               refreshPostStatus(db, target.postId);
             });
             return yield* loadPost(user.id, target.postId);
+          }),
+        ),
+
+      // One BEGIN IMMEDIATE transaction, run synchronously: two quick clicks can't share a slot.
+      enqueue: ({ payload: input }) =>
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const now = yield* Clock.currentTimeMillis;
+            const current = yield* loadPost(user.id, input.postId);
+            if (!isEditable(current.status)) {
+              return yield* conflict(
+                'This post has already started publishing and can no longer be edited.',
+              );
+            }
+            const slot = yield* query((db) =>
+              findNextSlot(db, user.id, now, {
+                accountIds: current.accountIds,
+                excludePostId: current.id,
+              }),
+            );
+            if (!slot) {
+              return yield* conflict('There is no free queue slot. Add posting times in Settings.');
+            }
+            return yield* savePost(
+              user.id,
+              current.id,
+              {
+                title: current.title,
+                body: current.body,
+                link: current.link,
+                status: 'scheduled',
+                scheduledAt: slot,
+                accountIds: current.accountIds,
+                mediaIds: current.mediaIds,
+                featuredMediaId: current.featuredMediaId,
+                thumbnailMediaId: current.thumbnailMediaId,
+                wordpressOptions: current.wordpressOptions,
+              },
+              false,
+            );
           }),
         ),
 

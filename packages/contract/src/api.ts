@@ -18,6 +18,7 @@ import {
   Platform,
   Post,
   Provider,
+  QueueSettings,
   User,
   WordPressCategory,
 } from './domain';
@@ -151,6 +152,12 @@ export class PostsApi extends HttpApiGroup.make('posts')
     HttpApiEndpoint.post('delete', '/delete', { payload: Id, success: Id, error: ApiErrors }),
     /** Queue a failed target again. The publisher picks it up on its next pass. */
     HttpApiEndpoint.post('retry', '/retry', { payload: TargetId, success: Post, error: ApiErrors }),
+    /** Schedules the post at the next free queue slot. Fails with Conflict when there is none. */
+    HttpApiEndpoint.post('enqueue', '/enqueue', {
+      payload: Schema.Struct({ postId: Schema.String }),
+      success: Post,
+      error: ApiErrors,
+    }),
     /** The owner posted a manual-handoff target (TikTok) themselves. */
     HttpApiEndpoint.post('markPosted', '/mark-posted', {
       payload: Schema.Struct({ targetId: Schema.String, url: Schema.optionalKey(HttpUrl) }),
@@ -268,6 +275,27 @@ export class SettingsApi extends HttpApiGroup.make('settings')
   .middleware(Authorization)
   .prefix('/rpc/settings') {}
 
+export class QueueApi extends HttpApiGroup.make('queue')
+  .add(
+    HttpApiEndpoint.get('slots', '/slots', { success: QueueSettings, error: ApiErrors }),
+    /** Replaces every slot (and the time zone they are in). */
+    HttpApiEndpoint.post('saveSlots', '/slots', {
+      payload: Schema.Struct({
+        timezone: QueueSettings.fields.timezone,
+        slots: QueueSettings.fields.slots.check(Schema.isMaxLength(200)),
+      }),
+      success: QueueSettings,
+      error: ApiErrors,
+    }),
+    /** The next slot no scheduled post has yet, or null. */
+    HttpApiEndpoint.get('nextSlot', '/next', {
+      success: Schema.Struct({ at: Schema.NullOr(Schema.Date) }),
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/queue') {}
+
 export class Api extends HttpApi.make('posthub')
   .add(SystemApi)
   .add(PostsApi)
@@ -275,4 +303,5 @@ export class Api extends HttpApi.make('posthub')
   .add(AccountsApi)
   .add(ProviderAppsApi)
   .add(SettingsApi)
+  .add(QueueApi)
   .middleware(InputValidation) {}

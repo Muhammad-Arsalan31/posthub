@@ -50,6 +50,13 @@
       "when": 1794829473925,
       "tag": "0006_smiling_galactus",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1794830022536,
+      "tag": "0007_wide_blindfold",
+      "breakpoints": true
     }
   ]
 }
