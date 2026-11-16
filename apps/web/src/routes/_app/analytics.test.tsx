@@ -72,12 +72,11 @@ beforeEach(() => {
 });
 
 describe('analytics page', () => {
-  // The first render loads the charts bundle, which is slow on a cold start.
   it('explains where numbers come from on a new install', async () => {
     mocks.overview.mockResolvedValue(overview({}, {}));
     await renderRoute('/analytics');
-    expect(await screen.findByText('No numbers yet', {}, { timeout: 20_000 })).toBeTruthy();
-  }, 30_000);
+    expect(await screen.findByText('No numbers yet', {}, { timeout: 15_000 })).toBeTruthy();
+  });
 
   it('shows totals with the change against the previous period', async () => {
     mocks.overview.mockResolvedValue(overview({ views: 1500, likes: 30 }, { views: 1000 }));

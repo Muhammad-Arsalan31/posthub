@@ -36,6 +36,16 @@ function EditPostPage() {
             Posts page to make changes.
           </Alert>
           <PostMetrics post={post} accounts={accounts.data ?? []} />
+          {post.targets.some((t) => t.status === 'published') && (
+            <Anchor
+              size="sm"
+              renderRoot={(rootProps) => (
+                <Link {...rootProps} to="/inbox" search={{ postId: post.id }} />
+              )}
+            >
+              See this post's comments in the inbox
+            </Anchor>
+          )}
         </>
       ) : (
         <PostEditor

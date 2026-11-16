@@ -161,6 +161,6 @@ describe('accounts: reconnect hints', () => {
     const accounts = Object.fromEntries(
       (await ctx.api.accounts.list()).map((a) => [a.displayName, a.reconnectFor]),
     );
-    expect(accounts).toEqual({ old: ['metrics'], new: [], wordpress: [] });
+    expect(accounts).toEqual({ old: ['metrics', 'comments'], new: ['comments'], wordpress: [] });
   });
 });

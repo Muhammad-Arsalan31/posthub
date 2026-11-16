@@ -25,4 +25,11 @@ globalThis.ResizeObserver ??= ResizeObserverStub as unknown as typeof ResizeObse
 
 window.scrollTo = () => {};
 
+// Autosizing textareas listen for web fonts loading.
+if (!('fonts' in document)) {
+  Object.defineProperty(document, 'fonts', {
+    value: { addEventListener: () => {}, removeEventListener: () => {}, ready: Promise.resolve() },
+  });
+}
+
 afterEach(() => cleanup());

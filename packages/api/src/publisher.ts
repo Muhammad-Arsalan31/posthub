@@ -207,12 +207,14 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
         refreshPostStatus(db, target.postId);
         if (changes.status === 'published' && changes.externalPostId && changes.publishedAt) {
           // Start reading its numbers soon; the sync worker reschedules by age after that.
-          insertSyncJob(db, {
-            kind: 'post_metrics',
-            subjectId: target.id,
-            socialAccountId: target.socialAccountId,
-            nextRunAt: new Date(changes.publishedAt.getTime() + FIRST_METRICS_DELAY_MS),
-          });
+          for (const kind of ['post_metrics', 'comments'] as const) {
+            insertSyncJob(db, {
+              kind,
+              subjectId: target.id,
+              socialAccountId: target.socialAccountId,
+              nextRunAt: new Date(changes.publishedAt.getTime() + FIRST_METRICS_DELAY_MS),
+            });
+          }
         }
       }),
     );

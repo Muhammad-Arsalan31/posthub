@@ -23,7 +23,7 @@ export type Platform = (typeof PLATFORMS)[number];
 export const POST_STATUSES = ['draft', 'scheduled', 'publishing', 'published', 'failed'] as const;
 export type PostStatus = (typeof POST_STATUSES)[number];
 
-export const SYNC_JOB_KINDS = ['post_metrics', 'account_metrics'] as const;
+export const SYNC_JOB_KINDS = ['post_metrics', 'account_metrics', 'comments'] as const;
 export type SyncJobKind = (typeof SYNC_JOB_KINDS)[number];
 
 /** `paused`: waiting for the owner to reconnect the account. `done`: nothing more to fetch. */
@@ -315,4 +315,89 @@ export const accountMetricSnapshot = sqliteTable(
     raw: text('raw', { mode: 'json' }).$type<Record<string, number>>(),
   },
   (t) => [index('account_metric_account_time_idx').on(t.socialAccountId, t.capturedAt)],
+);
+
+/** A comment on one published target, synced from the platform (an upsert on the external id). */
+export const comment = sqliteTable(
+  'comment',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    postTargetId: text('post_target_id')
+      .notNull()
+      .references(() => postTarget.id, { onDelete: 'cascade' }),
+    externalId: text('external_id').notNull(),
+    /** External id of the comment this replies to (null for top-level comments). */
+    parentExternalId: text('parent_external_id'),
+    authorName: text('author_name').notNull(),
+    authorAvatarUrl: text('author_avatar_url'),
+    authorId: text('author_id'),
+    text: text('text').notNull(),
+    likeCount: integer('like_count'),
+    likedByMe: integer('liked_by_me', { mode: 'boolean' }).notNull().default(false),
+    hidden: integer('hidden', { mode: 'boolean' }).notNull().default(false),
+    isOwn: integer('is_own', { mode: 'boolean' }).notNull().default(false),
+    externalCreatedAt: integer('external_created_at', { mode: 'timestamp_ms' }).notNull(),
+    readAt: integer('read_at', { mode: 'timestamp_ms' }),
+    archivedAt: integer('archived_at', { mode: 'timestamp_ms' }),
+    /** Gone from the platform (seen missing on a full sync), or deleted from PostHub. */
+    deletedAt: integer('deleted_at', { mode: 'timestamp_ms' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('comment_target_external_idx').on(t.postTargetId, t.externalId),
+    index('comment_user_idx').on(t.userId, t.externalCreatedAt),
+  ],
+);
+
+export const COMMENT_ACTION_KINDS = [
+  'reply',
+  'like',
+  'unlike',
+  'hide',
+  'unhide',
+  'delete',
+] as const;
+export type CommentActionKind = (typeof COMMENT_ACTION_KINDS)[number];
+
+/**
+ * The outbox: every write to a platform is recorded here first, then sent by the sync worker.
+ * `checkFirst`: an earlier send may have reached the platform, so look before sending again.
+ */
+export const commentAction = sqliteTable(
+  'comment_action',
+  {
+    id: text('id').primaryKey(),
+    commentId: text('comment_id')
+      .notNull()
+      .references(() => comment.id, { onDelete: 'cascade' }),
+    kind: text('kind', { enum: COMMENT_ACTION_KINDS }).notNull(),
+    /** Reply text. */
+    text: text('text'),
+    status: text('status', { enum: ['pending', 'sending', 'done', 'failed'] })
+      .notNull()
+      .default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    checkFirst: integer('check_first', { mode: 'boolean' }).notNull().default(false),
+    nextAttemptAt: integer('next_attempt_at', { mode: 'timestamp_ms' }),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+  },
+  (t) => [index('comment_action_status_idx').on(t.status)],
+);
+
+export const savedReply = sqliteTable(
+  'saved_reply',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    title: text('title').notNull(),
+    body: text('body').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('saved_reply_user_idx').on(t.userId)],
 );

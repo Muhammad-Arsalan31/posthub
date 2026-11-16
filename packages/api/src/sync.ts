@@ -29,6 +29,8 @@ import {
   type Scope,
 } from 'effect';
 import { makeCredentialAccess } from './accounts';
+import { makeCommentWork } from './comments';
+import { nextMetricsRun } from './sync-schedule';
 import { ProviderApps } from './provider-apps';
 import { Database, type DatabaseError } from './services';
 
@@ -38,15 +40,7 @@ const DAY = 24 * HOUR;
 /** Waits after failed run 1, 2, 3 and later (reads are retried indefinitely, slowly). */
 export const SYNC_BACKOFF_MS = [5 * 60_000, 30 * 60_000, 2 * HOUR, 6 * HOUR];
 
-/** How often to read a post's numbers, by its age; null once it is old enough to stop. */
-export function nextMetricsRun(publishedAt: number, now: number): number | null {
-  const age = now - publishedAt;
-  if (age < 48 * HOUR) return now + HOUR;
-  if (age < 7 * DAY) return now + 6 * HOUR;
-  if (age < 30 * DAY) return now + DAY;
-  if (age < 90 * DAY) return now + 7 * DAY;
-  return null;
-}
+export { nextMetricsRun } from './sync-schedule';
 
 export const ACCOUNT_METRICS_INTERVAL_MS = DAY;
 
@@ -107,8 +101,10 @@ export const makeSync = Effect.fnUntraced(function* ({
   const providerApps = yield* ProviderApps;
   const credentialAccess = yield* makeCredentialAccess;
   const jobs = yield* FiberSet.make<void>();
+  // Comment sync and the outbox (replies, likes, moderation) run in the same job set.
+  const commentWork = makeCommentWork({ database, providerApps, credentialAccess });
 
-  const recover = Effect.flatMap(Clock.currentTimeMillis, (now) =>
+  const recoverJobs = Effect.flatMap(Clock.currentTimeMillis, (now) =>
     database.transaction(
       database.use((db) => {
         const reset = db
@@ -132,6 +128,10 @@ export const makeSync = Effect.fnUntraced(function* ({
         return reset;
       }),
     ),
+  );
+
+  const recover = Effect.flatMap(recoverJobs, (reset) =>
+    Effect.map(commentWork.recoverActions, (actions) => reset + actions),
   );
 
   function claimNext(db: Db, at: Date, exclude: Platform[]): (Job & { platform: Platform }) | null {
@@ -228,6 +228,12 @@ export const makeSync = Effect.fnUntraced(function* ({
     return { _tag: 'ran', next: now + ACCOUNT_METRICS_INTERVAL_MS } satisfies Outcome;
   });
 
+  const runComments = Effect.fnUntraced(function* (job: Job, now: number) {
+    const result = yield* commentWork.syncTarget(job.subjectId, now);
+    if (result._tag === 'ran') return { _tag: 'ran', next: result.next } satisfies Outcome;
+    return stop(result._tag);
+  });
+
   const update = (job: Job, changes: Partial<typeof syncJob.$inferInsert>) =>
     database.use((db) => db.update(syncJob).set(changes).where(eq(syncJob.id, job.id)).run());
 
@@ -237,7 +243,9 @@ export const makeSync = Effect.fnUntraced(function* ({
       const result =
         job.kind === 'post_metrics'
           ? yield* runPostMetrics(job, now)
-          : yield* runAccountMetrics(job, now);
+          : job.kind === 'comments'
+            ? yield* runComments(job, now)
+            : yield* runAccountMetrics(job, now);
       const lastRunAt = new Date(now);
       if (result._tag === 'stop') {
         return yield* update(job, { status: result.status, lastRunAt });
@@ -308,6 +316,31 @@ export const makeSync = Effect.fnUntraced(function* ({
               ),
             );
           },
+        ),
+      );
+      if (Option.isNone(fiber)) break;
+      started.push(fiber.value);
+    }
+    // Then the outbox, with whatever room is left.
+    while ((yield* FiberSet.size(jobs)) < concurrency) {
+      const fiber = yield* Effect.uninterruptible(
+        Effect.flatMap(
+          database.transaction(database.use((db) => commentWork.claimAction(db, at))),
+          (action) =>
+            action
+              ? Effect.asSome(
+                  FiberSet.run(
+                    jobs,
+                    commentWork
+                      .runAction(action)
+                      .pipe(
+                        Effect.catchCause((cause) =>
+                          Effect.logError(`[inbox] ${action.id}`, cause),
+                        ),
+                      ),
+                  ),
+                )
+              : Effect.succeedNone,
         ),
       );
       if (Option.isNone(fiber)) break;

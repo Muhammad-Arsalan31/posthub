@@ -64,6 +64,13 @@
       "when": 1794830861546,
       "tag": "0008_petite_cassandra_nova",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1794832481626,
+      "tag": "0009_steady_george_stacy",
+      "breakpoints": true
     }
   ]
 }

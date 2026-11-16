@@ -53,6 +53,9 @@ export default defineConfig({
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    // Route tests render the whole app; the first one in a file loads every route's code
+    // (charts, calendar), which is slow while other packages' tests run in parallel.
+    testTimeout: 20_000,
   },
   server: {
     port: 5173,

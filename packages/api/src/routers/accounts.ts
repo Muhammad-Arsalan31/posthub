@@ -42,10 +42,19 @@ export const AccountsHandlers = HttpApiBuilder.group(Api, 'accounts', (handlers)
               .all(),
           );
           return rows.map(({ grantedScopes, ...account }): Account => {
-            const needed = integrations.insights(account.platform)?.scopes ?? [];
             // Accounts connected before scopes were recorded may lack them: suggest a reconnect.
-            const missing = needed.some((scope) => !grantedScopes?.includes(scope));
-            return { ...account, reconnectFor: missing ? ['metrics'] : [] };
+            const lacks = (scopes: readonly string[] = []) =>
+              scopes.some((scope) => !grantedScopes?.includes(scope));
+            const engagement = integrations.engagement(account.platform);
+            const reconnectFor: Account['reconnectFor'] = [];
+            if (lacks(integrations.insights(account.platform)?.scopes))
+              reconnectFor.push('metrics');
+            if (lacks(engagement?.scopes)) reconnectFor.push('comments');
+            return {
+              ...account,
+              reconnectFor,
+              engagement: engagement ? { ...engagement.capabilities } : null,
+            };
           });
         }),
 

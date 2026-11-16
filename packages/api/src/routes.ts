@@ -11,6 +11,7 @@ import { MediaHandlers } from './routers/media';
 import { PostsHandlers } from './routers/posts';
 import { ProviderAppsHandlers } from './routers/provider-apps';
 import { AnalyticsHandlers } from './routers/analytics';
+import { InboxHandlers, SavedRepliesHandlers } from './routers/inbox';
 import { MetricsHandlers } from './routers/metrics';
 import { QueueHandlers } from './routers/queue';
 import { SettingsHandlers } from './routers/settings';
@@ -31,6 +32,8 @@ export const ApiRoutes = HttpApiBuilder.layer(Api).pipe(
     QueueHandlers,
     MetricsHandlers,
     AnalyticsHandlers,
+    InboxHandlers,
+    SavedRepliesHandlers,
   ]),
   Layer.provide([AuthorizationLive, InputValidationLive]),
 );

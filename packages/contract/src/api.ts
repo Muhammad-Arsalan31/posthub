@@ -17,6 +17,8 @@ import {
   BestTimeCell,
   ContentTypeStats,
   EditableStatus,
+  InboxComment,
+  InboxThread,
   MediaHostSettings,
   MediaItem,
   OAuthProviderId,
@@ -25,6 +27,7 @@ import {
   PostTotals,
   Provider,
   QueueSettings,
+  SavedReply,
   TargetMetrics,
   TopPost,
   User,
@@ -386,6 +389,87 @@ export class AnalyticsApi extends HttpApiGroup.make('analytics')
   .middleware(Authorization)
   .prefix('/rpc/analytics') {}
 
+export class InboxApi extends HttpApiGroup.make('inbox')
+  .add(
+    /** Conversations, newest activity first. */
+    HttpApiEndpoint.post('list', '/list', {
+      payload: Schema.Struct({
+        accountIds: Schema.optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+        postId: Schema.optionalKey(Schema.String),
+        unread: Schema.optionalKey(Schema.Boolean),
+        archived: Schema.optionalKey(Schema.Boolean),
+      }),
+      success: List(InboxThread),
+      error: ApiErrors,
+    }),
+    /** A conversation's comments, oldest first. */
+    HttpApiEndpoint.get('thread', '/thread', {
+      payload: { commentId: Schema.String },
+      success: List(InboxComment),
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.get('unreadCount', '/unread', {
+      success: Schema.Struct({ count: Schema.Number }),
+      error: ApiErrors,
+    }),
+    /** Queues a reply; the sync worker sends it within a minute. */
+    HttpApiEndpoint.post('reply', '/reply', {
+      payload: Schema.Struct({ commentId: Schema.String, text: required(5000) }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('setLike', '/like', {
+      payload: Schema.Struct({ commentId: Schema.String, liked: Schema.Boolean }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('moderate', '/moderate', {
+      payload: Schema.Struct({
+        commentId: Schema.String,
+        action: Schema.Literals(['hide', 'unhide', 'delete']),
+      }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('markRead', '/read', {
+      payload: Schema.Struct({
+        commentIds: Schema.mutable(Schema.Array(Schema.String).check(Schema.isMaxLength(500))),
+      }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('archive', '/archive', {
+      payload: Schema.Struct({ commentId: Schema.String, archived: Schema.Boolean }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    /** Sends a failed reply or moderation step again. */
+    HttpApiEndpoint.post('retryAction', '/retry', {
+      payload: Schema.Struct({ actionId: Schema.String }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/inbox') {}
+
+export class SavedRepliesApi extends HttpApiGroup.make('savedReplies')
+  .add(
+    HttpApiEndpoint.get('list', '/', { success: List(SavedReply), error: ApiErrors }),
+    HttpApiEndpoint.post('save', '/save', {
+      payload: Schema.Struct({
+        id: Schema.optionalKey(Schema.String),
+        title: required(100),
+        body: required(5000),
+      }),
+      success: SavedReply,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('delete', '/delete', { payload: Id, success: Id, error: ApiErrors }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/saved-replies') {}
+
 export class Api extends HttpApi.make('posthub')
   .add(SystemApi)
   .add(PostsApi)
@@ -396,4 +480,6 @@ export class Api extends HttpApi.make('posthub')
   .add(QueueApi)
   .add(MetricsApi)
   .add(AnalyticsApi)
+  .add(InboxApi)
+  .add(SavedRepliesApi)
   .middleware(InputValidation) {}

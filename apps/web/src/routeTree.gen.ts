@@ -15,6 +15,7 @@ import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAccountsRouteImport } from './routes/_app/accounts'
 import { Route as AppAnalyticsRouteImport } from './routes/_app/analytics'
 import { Route as AppCalendarRouteImport } from './routes/_app/calendar'
+import { Route as AppInboxRouteImport } from './routes/_app/inbox'
 import { Route as AppMediaRouteImport } from './routes/_app/media'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppAnalyticsReportRouteImport } from './routes/_app/analytics_.report'
@@ -50,6 +51,11 @@ const AppCalendarRoute = AppCalendarRouteImport.update({
   path: '/calendar',
   getParentRoute: () => AppRoute,
 } as any)
+const AppInboxRoute = AppInboxRouteImport.update({
+  id: '/inbox',
+  path: '/inbox',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppMediaRoute = AppMediaRouteImport.update({
   id: '/media',
   path: '/media',
@@ -82,6 +88,7 @@ export interface FileRoutesByFullPath {
   '/accounts': typeof AppAccountsRoute
   '/analytics': typeof AppAnalyticsRoute
   '/calendar': typeof AppCalendarRoute
+  '/inbox': typeof AppInboxRoute
   '/media': typeof AppMediaRoute
   '/settings': typeof AppSettingsRoute
   '/analytics/report': typeof AppAnalyticsReportRoute
@@ -93,6 +100,7 @@ export interface FileRoutesByTo {
   '/accounts': typeof AppAccountsRoute
   '/analytics': typeof AppAnalyticsRoute
   '/calendar': typeof AppCalendarRoute
+  '/inbox': typeof AppInboxRoute
   '/media': typeof AppMediaRoute
   '/settings': typeof AppSettingsRoute
   '/': typeof AppIndexRoute
@@ -107,6 +115,7 @@ export interface FileRoutesById {
   '/_app/accounts': typeof AppAccountsRoute
   '/_app/analytics': typeof AppAnalyticsRoute
   '/_app/calendar': typeof AppCalendarRoute
+  '/_app/inbox': typeof AppInboxRoute
   '/_app/media': typeof AppMediaRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/': typeof AppIndexRoute
@@ -122,6 +131,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/analytics'
     | '/calendar'
+    | '/inbox'
     | '/media'
     | '/settings'
     | '/analytics/report'
@@ -133,6 +143,7 @@ export interface FileRouteTypes {
     | '/accounts'
     | '/analytics'
     | '/calendar'
+    | '/inbox'
     | '/media'
     | '/settings'
     | '/'
@@ -146,6 +157,7 @@ export interface FileRouteTypes {
     | '/_app/accounts'
     | '/_app/analytics'
     | '/_app/calendar'
+    | '/_app/inbox'
     | '/_app/media'
     | '/_app/settings'
     | '/_app/'
@@ -203,6 +215,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppCalendarRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/inbox': {
+      id: '/_app/inbox'
+      path: '/inbox'
+      fullPath: '/inbox'
+      preLoaderRoute: typeof AppInboxRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/media': {
       id: '/_app/media'
       path: '/media'
@@ -245,6 +264,7 @@ interface AppRouteChildren {
   AppAccountsRoute: typeof AppAccountsRoute
   AppAnalyticsRoute: typeof AppAnalyticsRoute
   AppCalendarRoute: typeof AppCalendarRoute
+  AppInboxRoute: typeof AppInboxRoute
   AppMediaRoute: typeof AppMediaRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
@@ -257,6 +277,7 @@ const AppRouteChildren: AppRouteChildren = {
   AppAccountsRoute: AppAccountsRoute,
   AppAnalyticsRoute: AppAnalyticsRoute,
   AppCalendarRoute: AppCalendarRoute,
+  AppInboxRoute: AppInboxRoute,
   AppMediaRoute: AppMediaRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,

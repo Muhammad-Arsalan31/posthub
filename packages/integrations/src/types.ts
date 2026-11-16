@@ -187,7 +187,3 @@ export interface EngagementAdapter<C> {
   ): Effect.Effect<void, PublishError>;
   refresh?(credentials: C): Effect.Effect<RefreshResult<C>, PublishError>;
 }
-
-/** For capabilities a platform lacks: a clear, permanent "no". */
-export const unsupported = (platform: Platform, what: string) =>
-  `${what} is not possible on ${platform} through its API.`;
