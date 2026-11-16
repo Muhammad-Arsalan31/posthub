@@ -1,0 +1,43 @@
+/* Chart series colors, one fixed slot per platform (color follows the platform, never its rank).
+   Validated categorical palette (light and dark steps) from the dataviz reference instance. */
+:root {
+  --viz-youtube: #2a78d6;
+  --viz-linkedin: #eb6834;
+  --viz-facebook: #1baf7a;
+  --viz-instagram: #eda100;
+  --viz-tiktok: #e87ba4;
+  --viz-wordpress: #008300;
+  /* Sequential blue for the best-times heatmap, light to dark. */
+  --viz-seq-1: #cde2fb;
+  --viz-seq-2: #9ec5f4;
+  --viz-seq-3: #6da7ec;
+  --viz-seq-4: #3987e5;
+  --viz-seq-5: #256abf;
+  --viz-seq-6: #184f95;
+}
+[data-mantine-color-scheme='dark'] {
+  --viz-youtube: #3987e5;
+  --viz-linkedin: #d95926;
+  --viz-facebook: #199e70;
+  --viz-instagram: #c98500;
+  --viz-tiktok: #d55181;
+  --viz-wordpress: #0ca30c;
+  --viz-seq-1: #104281;
+  --viz-seq-2: #184f95;
+  --viz-seq-3: #1c5cab;
+  --viz-seq-4: #2a78d6;
+  --viz-seq-5: #5598e7;
+  --viz-seq-6: #86b6ef;
+}
+
+/* The printable report: only the report itself goes on paper. */
+@media print {
+  .mantine-AppShell-navbar,
+  .mantine-AppShell-header,
+  [data-print='hide'] {
+    display: none !important;
+  }
+  .mantine-AppShell-main {
+    padding: 0 !important;
+  }
+}

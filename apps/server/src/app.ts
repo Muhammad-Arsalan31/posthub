@@ -5,8 +5,10 @@ import {
   beginOAuth,
   completeOAuth,
   ConnectionError,
-  type Database,
+  analyticsCsv,
+  Database,
   findOwnMedia,
+  loadAnalytics,
   type MediaDir,
   ProviderApps,
   Sessions,
@@ -197,12 +199,39 @@ function buildRoutes(
     ),
   );
 
+  // Analytics as CSV, downloaded with a plain link (the typed API only speaks JSON).
+  const analyticsExport = HttpRouter.add('GET', '/analytics/export.csv', (request) =>
+    withServices(
+      Effect.gen(function* () {
+        const session = yield* sessionOf(request);
+        if (!session) return HttpServerResponse.empty({ status: 401 });
+        const params = searchParams(request);
+        const from = Date.parse(params.get('from') ?? '');
+        const to = Date.parse(params.get('to') ?? '');
+        if (Number.isNaN(from) || Number.isNaN(to) || from > to) {
+          return HttpServerResponse.text('Pass from and to as ISO dates.', { status: 400 });
+        }
+        const accountIds = params.getAll('accountId');
+        const database = yield* Database;
+        const csv = yield* database.use((db) =>
+          analyticsCsv(loadAnalytics(db, session.user.id, accountIds), from, to),
+        );
+        const name = `posthub-${new Date(from).toISOString().slice(0, 10)}-to-${new Date(to).toISOString().slice(0, 10)}.csv`;
+        return HttpServerResponse.text(csv, {
+          contentType: 'text/csv; charset=utf-8',
+          headers: { 'content-disposition': `attachment; filename="${name}"` },
+        });
+      }).pipe(Effect.orDie),
+    ),
+  );
+
   const routes = Layer.mergeAll(
     health,
     betterAuth,
     connectStart,
     connectCallback,
     files,
+    analyticsExport,
     // The typed HTTP API shared with the web app (@posthub/contract).
     ApiRoutes,
   );

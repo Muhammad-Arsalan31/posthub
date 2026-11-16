@@ -42,6 +42,7 @@ packages/api/        HttpApi handlers (routers/<area>.ts, assembled in src/route
   src/accounts.ts    makeCredentialAccess: decrypt, refresh, store tokens, mark expired (publisher + sync)
   src/settings.ts    per-user `app_setting` rows (JSON, vault-encrypted when secret)
   src/media-hosts.ts MediaHosts service: the owner's media host (S3 bucket), read per use
+  src/analytics.ts   analytics definitions (gains from snapshot deltas, engagement, buckets) + CSV
   src/queue.ts       posting slots: nextSlotTime() (pure, DST-aware) and findNextSlot(db, ...)
   src/post-rules.ts  what each platform can publish; checked before a post is scheduled
   src/testing.ts     testContext(), sessionFor() for handler tests (@posthub/api/testing)
@@ -86,6 +87,8 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
 - In production, the server serves `apps/web/dist` itself, also same-origin.
 - `/api/auth/*` is better-auth. `/rpc/*` is the HttpApi from `@posthub/contract`; its `Authorization` middleware
   resolves the session cookie and provides `CurrentUser`.
+- `/analytics/export.csv?from&to[&accountId]` downloads analytics as CSV (session checked; a plain route because the
+  typed client only speaks JSON). Dev proxies it too.
 - `/files/:id` streams an uploaded media file to its owner (Range supported). Uploads go through the API
   (`media.upload` takes a `File`) and land in the media folder.
 - `/connect/:provider/start` and `/connect/:provider/callback` are the platform OAuth redirects (plain HttpRouter
@@ -134,6 +137,8 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
 - Installed Mantine extensions: form, dates (+dayjs), schedule (the calendar page), charts (+recharts), notifications,
   modals, tiptap (+StarterKit, Link), dropzone, emoji. Keep every `@mantine/*` on the same version: schedule pins its peers exactly. Their CSS and providers are already wired in `src/providers.tsx`.
   Use `notifications.show()` and `modals.openConfirmModal()` directly.
+- Charts use `@mantine/charts`; each platform has a fixed color (`--viz-<platform>` in `src/chart-colors.css`, a
+  validated palette with light and dark steps). Load the `dataviz` skill before changing charts.
 - Test files sit next to routes and are excluded from routing via `routeFileIgnorePattern` in `vite.config.ts`.
 
 ### Connectors (`packages/integrations`)

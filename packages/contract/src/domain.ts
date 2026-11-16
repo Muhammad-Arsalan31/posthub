@@ -217,3 +217,90 @@ export const PostTotals = Schema.Struct({
   comments: Count,
 });
 export type PostTotals = typeof PostTotals.Type;
+
+export const ANALYTICS_METRICS = [
+  'views',
+  'reach',
+  'likes',
+  'comments',
+  'shares',
+  'saves',
+  'clicks',
+  'engagement',
+] as const;
+export const AnalyticsMetric = Schema.Literals(ANALYTICS_METRICS);
+export type AnalyticsMetric = typeof AnalyticsMetric.Type;
+
+const Platforms = Schema.mutable(Schema.Array(Platform));
+
+/** What was gained in a period for one metric, and which platforms reported it. */
+export const MetricTotal = Schema.Struct({
+  metric: AnalyticsMetric,
+  value: Schema.NullOr(Schema.Number),
+  platforms: Platforms,
+});
+export type MetricTotal = typeof MetricTotal.Type;
+const Totals = Schema.mutable(Schema.Array(MetricTotal));
+
+export const AnalyticsOverview = Schema.Struct({
+  totals: Totals,
+  /** The same totals for the period just before, for the change. */
+  previous: Totals,
+  byPlatform: Schema.mutable(Schema.Array(Schema.Struct({ platform: Platform, totals: Totals }))),
+  followers: Schema.mutable(
+    Schema.Array(
+      Schema.Struct({
+        accountId: Schema.String,
+        displayName: Schema.String,
+        platform: Platform,
+        followers: Schema.NullOr(Schema.Number),
+        /** Change since the last count before the period; null without one. */
+        change: Schema.NullOr(Schema.Number),
+      }),
+    ),
+  ),
+});
+export type AnalyticsOverview = typeof AnalyticsOverview.Type;
+
+export const AnalyticsSeries = Schema.Struct({
+  platforms: Platforms,
+  points: Schema.mutable(
+    Schema.Array(
+      Schema.Struct({
+        /** First day of the bucket, `YYYY-MM-DD` in the owner's time zone. */
+        bucket: Schema.String,
+        values: Schema.Record(Schema.String, Schema.Number),
+      }),
+    ),
+  ),
+});
+export type AnalyticsSeries = typeof AnalyticsSeries.Type;
+
+export const TopPost = Schema.Struct({
+  postId: Schema.String,
+  title: Schema.String,
+  publishedAt: Schema.Date,
+  value: Schema.NullOr(Schema.Number),
+  platforms: Platforms,
+});
+export type TopPost = typeof TopPost.Type;
+
+export const BestTimeCell = Schema.Struct({
+  /** 0 = Sunday. */
+  weekday: Schema.Number,
+  hour: Schema.Number,
+  posts: Schema.Number,
+  /** Average engagement rate. */
+  rate: Schema.Number,
+  /** Fewer than 3 posts. */
+  lowConfidence: Schema.Boolean,
+});
+export type BestTimeCell = typeof BestTimeCell.Type;
+
+export const ContentTypeStats = Schema.Struct({
+  contentType: Schema.Literals(['video', 'image', 'link', 'text']),
+  posts: Schema.Number,
+  averageEngagement: Schema.NullOr(Schema.Number),
+  averageRate: Schema.NullOr(Schema.Number),
+});
+export type ContentTypeStats = typeof ContentTypeStats.Type;

@@ -13,9 +13,11 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAccountsRouteImport } from './routes/_app/accounts'
+import { Route as AppAnalyticsRouteImport } from './routes/_app/analytics'
 import { Route as AppCalendarRouteImport } from './routes/_app/calendar'
 import { Route as AppMediaRouteImport } from './routes/_app/media'
 import { Route as AppSettingsRouteImport } from './routes/_app/settings'
+import { Route as AppAnalyticsReportRouteImport } from './routes/_app/analytics_.report'
 import { Route as AppPostsPostIdRouteImport } from './routes/_app/posts.$postId'
 import { Route as AppPostsNewRouteImport } from './routes/_app/posts.new'
 
@@ -38,6 +40,11 @@ const AppAccountsRoute = AppAccountsRouteImport.update({
   path: '/accounts',
   getParentRoute: () => AppRoute,
 } as any)
+const AppAnalyticsRoute = AppAnalyticsRouteImport.update({
+  id: '/analytics',
+  path: '/analytics',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppCalendarRoute = AppCalendarRouteImport.update({
   id: '/calendar',
   path: '/calendar',
@@ -51,6 +58,11 @@ const AppMediaRoute = AppMediaRouteImport.update({
 const AppSettingsRoute = AppSettingsRouteImport.update({
   id: '/settings',
   path: '/settings',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAnalyticsReportRoute = AppAnalyticsReportRouteImport.update({
+  id: '/analytics_/report',
+  path: '/analytics/report',
   getParentRoute: () => AppRoute,
 } as any)
 const AppPostsPostIdRoute = AppPostsPostIdRouteImport.update({
@@ -68,19 +80,23 @@ export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
   '/accounts': typeof AppAccountsRoute
+  '/analytics': typeof AppAnalyticsRoute
   '/calendar': typeof AppCalendarRoute
   '/media': typeof AppMediaRoute
   '/settings': typeof AppSettingsRoute
+  '/analytics/report': typeof AppAnalyticsReportRoute
   '/posts/$postId': typeof AppPostsPostIdRoute
   '/posts/new': typeof AppPostsNewRoute
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/accounts': typeof AppAccountsRoute
+  '/analytics': typeof AppAnalyticsRoute
   '/calendar': typeof AppCalendarRoute
   '/media': typeof AppMediaRoute
   '/settings': typeof AppSettingsRoute
   '/': typeof AppIndexRoute
+  '/analytics/report': typeof AppAnalyticsReportRoute
   '/posts/$postId': typeof AppPostsPostIdRoute
   '/posts/new': typeof AppPostsNewRoute
 }
@@ -89,10 +105,12 @@ export interface FileRoutesById {
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
   '/_app/accounts': typeof AppAccountsRoute
+  '/_app/analytics': typeof AppAnalyticsRoute
   '/_app/calendar': typeof AppCalendarRoute
   '/_app/media': typeof AppMediaRoute
   '/_app/settings': typeof AppSettingsRoute
   '/_app/': typeof AppIndexRoute
+  '/_app/analytics_/report': typeof AppAnalyticsReportRoute
   '/_app/posts/$postId': typeof AppPostsPostIdRoute
   '/_app/posts/new': typeof AppPostsNewRoute
 }
@@ -102,19 +120,23 @@ export interface FileRouteTypes {
     | '/'
     | '/login'
     | '/accounts'
+    | '/analytics'
     | '/calendar'
     | '/media'
     | '/settings'
+    | '/analytics/report'
     | '/posts/$postId'
     | '/posts/new'
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
     | '/accounts'
+    | '/analytics'
     | '/calendar'
     | '/media'
     | '/settings'
     | '/'
+    | '/analytics/report'
     | '/posts/$postId'
     | '/posts/new'
   id:
@@ -122,10 +144,12 @@ export interface FileRouteTypes {
     | '/_app'
     | '/login'
     | '/_app/accounts'
+    | '/_app/analytics'
     | '/_app/calendar'
     | '/_app/media'
     | '/_app/settings'
     | '/_app/'
+    | '/_app/analytics_/report'
     | '/_app/posts/$postId'
     | '/_app/posts/new'
   fileRoutesById: FileRoutesById
@@ -165,6 +189,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppAccountsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/analytics': {
+      id: '/_app/analytics'
+      path: '/analytics'
+      fullPath: '/analytics'
+      preLoaderRoute: typeof AppAnalyticsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/calendar': {
       id: '/_app/calendar'
       path: '/calendar'
@@ -186,6 +217,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppSettingsRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/analytics_/report': {
+      id: '/_app/analytics_/report'
+      path: '/analytics/report'
+      fullPath: '/analytics/report'
+      preLoaderRoute: typeof AppAnalyticsReportRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/posts/$postId': {
       id: '/_app/posts/$postId'
       path: '/posts/$postId'
@@ -205,20 +243,24 @@ declare module '@tanstack/react-router' {
 
 interface AppRouteChildren {
   AppAccountsRoute: typeof AppAccountsRoute
+  AppAnalyticsRoute: typeof AppAnalyticsRoute
   AppCalendarRoute: typeof AppCalendarRoute
   AppMediaRoute: typeof AppMediaRoute
   AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
+  AppAnalyticsReportRoute: typeof AppAnalyticsReportRoute
   AppPostsPostIdRoute: typeof AppPostsPostIdRoute
   AppPostsNewRoute: typeof AppPostsNewRoute
 }
 
 const AppRouteChildren: AppRouteChildren = {
   AppAccountsRoute: AppAccountsRoute,
+  AppAnalyticsRoute: AppAnalyticsRoute,
   AppCalendarRoute: AppCalendarRoute,
   AppMediaRoute: AppMediaRoute,
   AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,
+  AppAnalyticsReportRoute: AppAnalyticsReportRoute,
   AppPostsPostIdRoute: AppPostsPostIdRoute,
   AppPostsNewRoute: AppPostsNewRoute,
 }

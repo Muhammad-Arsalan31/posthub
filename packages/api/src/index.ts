@@ -20,3 +20,4 @@ export { Sessions, type SessionsService } from './http-support';
 export { ApiRoutes, apiWebHandler } from './routes';
 export { findOwnMedia } from './routers/media';
 export { Sync, syncWorker, type SyncOptions } from './sync';
+export { analyticsCsv, loadAnalytics } from './analytics';

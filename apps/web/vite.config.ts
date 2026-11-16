@@ -40,7 +40,13 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
         // API, auth, RPC, OAuth and media routes must always hit the server.
-        navigateFallbackDenylist: [/^\/api\//, /^\/rpc\//, /^\/connect\//, /^\/files\//],
+        navigateFallbackDenylist: [
+          /^\/api\//,
+          /^\/rpc\//,
+          /^\/connect\//,
+          /^\/files\//,
+          /^\/analytics\/export/,
+        ],
       },
     }),
   ],
@@ -56,6 +62,7 @@ export default defineConfig({
       '/rpc': apiTarget,
       '/connect': apiTarget,
       '/files': apiTarget,
+      '/analytics/export.csv': apiTarget,
     },
   },
 });

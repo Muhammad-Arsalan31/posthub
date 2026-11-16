@@ -11,6 +11,11 @@ import {
 } from 'effect/http-api';
 import {
   Account,
+  AnalyticsMetric,
+  AnalyticsOverview,
+  AnalyticsSeries,
+  BestTimeCell,
+  ContentTypeStats,
   EditableStatus,
   MediaHostSettings,
   MediaItem,
@@ -21,6 +26,7 @@ import {
   Provider,
   QueueSettings,
   TargetMetrics,
+  TopPost,
   User,
   WordPressCategory,
 } from './domain';
@@ -334,6 +340,52 @@ export class MetricsApi extends HttpApiGroup.make('metrics')
   .middleware(Authorization)
   .prefix('/rpc/metrics') {}
 
+/** A period of time, optionally for some accounts only. */
+const Range = {
+  from: Schema.Date,
+  to: Schema.Date,
+  accountIds: Schema.optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+};
+
+export class AnalyticsApi extends HttpApiGroup.make('analytics')
+  .add(
+    HttpApiEndpoint.post('overview', '/overview', {
+      payload: Schema.Struct(Range),
+      success: AnalyticsOverview,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('timeseries', '/timeseries', {
+      payload: Schema.Struct({
+        ...Range,
+        metric: AnalyticsMetric,
+        groupBy: Schema.Literals(['day', 'week']),
+      }),
+      success: AnalyticsSeries,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('topPosts', '/top-posts', {
+      payload: Schema.Struct({
+        ...Range,
+        metric: AnalyticsMetric,
+        limit: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 })),
+      }),
+      success: List(TopPost),
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('bestTimes', '/best-times', {
+      payload: Schema.Struct({ accountIds: Range.accountIds }),
+      success: Schema.Struct({ timezone: Schema.String, cells: List(BestTimeCell) }),
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('byContentType', '/content-types', {
+      payload: Schema.Struct(Range),
+      success: List(ContentTypeStats),
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/analytics') {}
+
 export class Api extends HttpApi.make('posthub')
   .add(SystemApi)
   .add(PostsApi)
@@ -343,4 +395,5 @@ export class Api extends HttpApi.make('posthub')
   .add(SettingsApi)
   .add(QueueApi)
   .add(MetricsApi)
+  .add(AnalyticsApi)
   .middleware(InputValidation) {}

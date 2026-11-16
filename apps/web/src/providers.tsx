@@ -6,6 +6,7 @@ import '@mantine/tiptap/styles.css';
 import '@mantine/dropzone/styles.css';
 import '@mantine/emoji/styles.css';
 import '@mantine/schedule/styles.css';
+import './chart-colors.css';
 import { createTheme, MantineProvider } from '@mantine/core';
 import { DatesProvider } from '@mantine/dates';
 import { ModalsProvider } from '@mantine/modals';
