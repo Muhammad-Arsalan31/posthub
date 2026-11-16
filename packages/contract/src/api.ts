@@ -113,6 +113,8 @@ export const PostFields = Schema.Struct({
   featuredMediaId: Schema.NullOr(Schema.String),
   thumbnailMediaId: Schema.NullOr(Schema.String),
   wordpressOptions: Schema.NullOr(WordPressOptionsInput),
+  firstComment: Schema.NullOr(bounded(10_000)),
+  pinFirstComment: Schema.Boolean,
 });
 export type PostFields = typeof PostFields.Type;
 
@@ -126,6 +128,8 @@ const optionalFields = {
   featuredMediaId: Schema.optionalKey(PostFields.fields.featuredMediaId),
   thumbnailMediaId: Schema.optionalKey(PostFields.fields.thumbnailMediaId),
   wordpressOptions: Schema.optionalKey(PostFields.fields.wordpressOptions),
+  firstComment: Schema.optionalKey(PostFields.fields.firstComment),
+  pinFirstComment: Schema.optionalKey(PostFields.fields.pinFirstComment),
 };
 
 /** The client supplies the id so TanStack DB can insert optimistically. */
@@ -166,6 +170,18 @@ export class PostsApi extends HttpApiGroup.make('posts')
     /** Schedules the post at the next free queue slot. Fails with Conflict when there is none. */
     HttpApiEndpoint.post('enqueue', '/enqueue', {
       payload: Schema.Struct({ postId: Schema.String }),
+      success: Post,
+      error: ApiErrors,
+    }),
+    /** Tries a failed first comment again (checking first that it isn't already there). */
+    HttpApiEndpoint.post('retryFirstComment', '/retry-first-comment', {
+      payload: TargetId,
+      success: Post,
+      error: ApiErrors,
+    }),
+    /** The owner pinned the first comment in the platform's app (no API can). */
+    HttpApiEndpoint.post('markPinned', '/mark-pinned', {
+      payload: Schema.Struct({ targetId: Schema.String, pinned: Schema.Boolean }),
       success: Post,
       error: ApiErrors,
     }),

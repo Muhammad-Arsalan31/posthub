@@ -99,6 +99,37 @@ export function createYouTubeEngagement(
         }),
       ),
 
+    postComment: (credentials, videoId, text) =>
+      Effect.map(
+        http<{ id: string; snippet?: { topLevelComment?: CommentResource } }>(
+          'youtube',
+          post(`${API}/commentThreads?part=snippet`, {
+            ...auth(credentials),
+            body: json({
+              snippet: { videoId, topLevelComment: { snippet: { textOriginal: text } } },
+            }),
+          }),
+        ),
+        ({ data }) => {
+          const top = data.snippet?.topLevelComment;
+          return top
+            ? { ...toComment(top, ''), isOwn: true }
+            : {
+                externalId: data.id,
+                parentExternalId: null,
+                authorName: 'You',
+                authorAvatarUrl: null,
+                authorId: null,
+                text,
+                likeCount: 0,
+                likedByMe: false,
+                createdAt: new Date(),
+                isOwn: true,
+                hidden: false,
+              };
+        },
+      ),
+
     setLike: () =>
       Effect.fail(
         platformError('youtube', 'YouTube does not let apps like comments.', { retryable: false }),

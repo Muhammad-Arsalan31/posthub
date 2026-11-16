@@ -11,6 +11,8 @@ const post = {
   featuredMediaId: null,
   thumbnailMediaId: null,
   wordpressOptions: null,
+  firstComment: null,
+  pinFirstComment: false,
   status: 'scheduled',
   scheduledAt: '2030-01-01T09:00:00.000Z',
   createdAt: '2029-12-01T00:00:00.000Z',

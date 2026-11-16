@@ -14,7 +14,12 @@ import { HttpApiBuilder } from 'effect/http-api';
 import { badRequest, conflict, handlerDatabase, notFound } from '../http-support';
 import { inlineMediaIds } from '../inline-media';
 import { MediaHosts } from '../media-hosts';
-import { isManualPlatform, platformProblem, type RuleOptions } from '../post-rules';
+import {
+  firstCommentProblem,
+  isManualPlatform,
+  platformProblem,
+  type RuleOptions,
+} from '../post-rules';
 import { refreshPostStatus } from '../publisher';
 import { findNextSlot } from '../queue';
 import { Database } from '../services';
@@ -31,6 +36,9 @@ const targetColumns = {
   externalUrl: postTarget.externalUrl,
   publishedAt: postTarget.publishedAt,
   nextAttemptAt: postTarget.nextAttemptAt,
+  firstCommentStatus: postTarget.firstCommentStatus,
+  firstCommentError: postTarget.firstCommentError,
+  pinnedAt: postTarget.pinnedAt,
 };
 
 /** Posts with their selected accounts, media (in order) and per-platform publish state. */
@@ -134,11 +142,9 @@ function problemWith(
   const problems = accounts.flatMap((account) => {
     if (account.status !== 'active')
       return [`${account.displayName}: reconnect this account first.`];
-    const problem = platformProblem(
-      account.platform,
-      { ...input, media: attached, thumbnail },
-      options,
-    );
+    const problem =
+      firstCommentProblem(account.platform, input.firstComment) ??
+      platformProblem(account.platform, { ...input, media: attached, thumbnail }, options);
     return problem ? [`${account.displayName}: ${problem}`] : [];
   });
   return problems.length ? problems.join('\n') : null;
@@ -162,6 +168,8 @@ function writePost(
     wordpressOptions: input.wordpressOptions
       ? { ...input.wordpressOptions, tags: input.wordpressOptions.tags.map((tag) => tag.trim()) }
       : null,
+    firstComment: input.firstComment?.trim() || null,
+    pinFirstComment: input.pinFirstComment,
     status: input.status,
     scheduledAt: input.scheduledAt,
   };
@@ -271,6 +279,8 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
               featuredMediaId: input.featuredMediaId ?? null,
               thumbnailMediaId: input.thumbnailMediaId ?? null,
               wordpressOptions: input.wordpressOptions ?? null,
+              firstComment: input.firstComment ?? null,
+              pinFirstComment: input.pinFirstComment ?? false,
             },
             true,
           ),
@@ -300,6 +310,8 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
                 featuredMediaId: current.featuredMediaId,
                 thumbnailMediaId: current.thumbnailMediaId,
                 wordpressOptions: current.wordpressOptions,
+                firstComment: current.firstComment,
+                pinFirstComment: current.pinFirstComment,
                 ...input.changes,
               },
               false,
@@ -393,11 +405,57 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
                 featuredMediaId: current.featuredMediaId,
                 thumbnailMediaId: current.thumbnailMediaId,
                 wordpressOptions: current.wordpressOptions,
+                firstComment: current.firstComment,
+                pinFirstComment: current.pinFirstComment,
               },
               false,
             );
           }),
         ),
+
+      retryFirstComment: ({ payload: input }) =>
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const { target } = yield* ownTarget(user.id, input.targetId);
+            if (target.firstCommentStatus !== 'failed') {
+              return yield* conflict('Only a failed first comment can be retried.');
+            }
+            yield* query((db) =>
+              db
+                .update(postTarget)
+                // It may have been posted after all: the worker looks before sending.
+                .set({
+                  firstCommentStatus: 'pending',
+                  firstCommentAttempts: 0,
+                  firstCommentNextAt: null,
+                  firstCommentError: null,
+                  firstCommentCheck: true,
+                })
+                .where(eq(postTarget.id, target.id))
+                .run(),
+            );
+            return yield* loadPost(user.id, target.postId);
+          }),
+        ),
+
+      markPinned: ({ payload: input }) =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser;
+          const now = new Date(yield* Clock.currentTimeMillis);
+          const { target } = yield* ownTarget(user.id, input.targetId);
+          if (target.firstCommentStatus !== 'posted') {
+            return yield* conflict('The first comment has not been posted yet.');
+          }
+          yield* query((db) =>
+            db
+              .update(postTarget)
+              .set({ pinnedAt: input.pinned ? now : null })
+              .where(eq(postTarget.id, target.id))
+              .run(),
+          );
+          return yield* loadPost(user.id, target.postId);
+        }),
 
       markPosted: ({ payload: input }) =>
         transaction(

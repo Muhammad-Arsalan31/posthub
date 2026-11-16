@@ -248,3 +248,39 @@ describe('engagement', () => {
       }),
   );
 });
+
+describe('first comments', () => {
+  it.effect('YouTube starts a new thread on the video', () =>
+    Effect.gen(function* () {
+      const { fake, integrations } = build([[`POST ${YT}/commentThreads`, () => ({ id: 't1' })]]);
+      const posted = yield* integrations
+        .engagement('youtube')!
+        .postComment({ accessToken: 't', refreshToken: 'r', expiresAt: 0 }, 'vid', 'Links below');
+      expect(posted).toMatchObject({ externalId: 't1', isOwn: true, parentExternalId: null });
+      expect(JSON.parse(fake.calls[0]!.body as string)).toEqual({
+        snippet: { videoId: 'vid', topLevelComment: { snippet: { textOriginal: 'Links below' } } },
+      });
+    }),
+  );
+
+  it.effect('Instagram media that is not ready for comments yet is worth retrying', () =>
+    Effect.gen(function* () {
+      const { integrations } = build([
+        [
+          `POST ${GRAPH}/m1/comments`,
+          () =>
+            Response.json(
+              { error: { message: 'The media is not ready yet, please try again later.' } },
+              { status: 400 },
+            ),
+        ],
+      ]);
+      const error = yield* Effect.flip(
+        integrations
+          .engagement('instagram')!
+          .postComment({ igUserId: 'ig1', accessToken: 't' }, 'm1', 'Hi'),
+      );
+      expect((error as PlatformError).retryable).toBe(true);
+    }),
+  );
+});

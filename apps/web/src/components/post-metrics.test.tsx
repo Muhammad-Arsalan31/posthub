@@ -64,6 +64,9 @@ const target = (id: string, socialAccountId: string) => ({
   externalUrl: null,
   publishedAt: new Date(),
   nextAttemptAt: null,
+  firstCommentStatus: 'none' as const,
+  firstCommentError: null,
+  pinnedAt: null,
 });
 
 const published: Post = {
@@ -75,6 +78,8 @@ const published: Post = {
   featuredMediaId: null,
   thumbnailMediaId: null,
   wordpressOptions: null,
+  firstComment: null,
+  pinFirstComment: false,
   status: 'published',
   scheduledAt: new Date(),
   createdAt: new Date(),

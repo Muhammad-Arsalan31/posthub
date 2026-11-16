@@ -23,6 +23,9 @@ export type Platform = (typeof PLATFORMS)[number];
 export const POST_STATUSES = ['draft', 'scheduled', 'publishing', 'published', 'failed'] as const;
 export type PostStatus = (typeof POST_STATUSES)[number];
 
+export const FIRST_COMMENT_STATUSES = ['none', 'pending', 'posting', 'posted', 'failed'] as const;
+export type FirstCommentStatus = (typeof FIRST_COMMENT_STATUSES)[number];
+
 export const SYNC_JOB_KINDS = ['post_metrics', 'account_metrics', 'comments'] as const;
 export type SyncJobKind = (typeof SYNC_JOB_KINDS)[number];
 
@@ -113,6 +116,10 @@ export const post = sqliteTable(
     thumbnailMediaId: text('thumbnail_media_id').references(() => mediaAsset.id, {
       onDelete: 'set null',
     }),
+    /** Posted as a comment under the post right after it publishes (where the platform allows). */
+    firstComment: text('first_comment'),
+    /** The owner wants the first comment pinned: PostHub reminds them (no platform lets apps pin). */
+    pinFirstComment: integer('pin_first_comment', { mode: 'boolean' }).notNull().default(false),
     status: text('status', { enum: POST_STATUSES }).notNull().default('draft'),
     scheduledAt: integer('scheduled_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
@@ -162,6 +169,18 @@ export const postTarget = sqliteTable(
     externalUrl: text('external_url'),
     lastError: text('last_error'),
     publishedAt: integer('published_at', { mode: 'timestamp_ms' }),
+    /** The first comment, a separate step after publishing: it never fails or reposts the post. */
+    firstCommentStatus: text('first_comment_status', { enum: FIRST_COMMENT_STATUSES })
+      .notNull()
+      .default('none'),
+    firstCommentAttempts: integer('first_comment_attempts').notNull().default(0),
+    firstCommentNextAt: integer('first_comment_next_at', { mode: 'timestamp_ms' }),
+    /** An earlier attempt may have posted it: look on the platform before sending again. */
+    firstCommentCheck: integer('first_comment_check', { mode: 'boolean' }).notNull().default(false),
+    firstCommentExternalId: text('first_comment_external_id'),
+    firstCommentError: text('first_comment_error'),
+    /** The owner confirmed they pinned the first comment. */
+    pinnedAt: integer('pinned_at', { mode: 'timestamp_ms' }),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },

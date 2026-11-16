@@ -130,8 +130,9 @@ export const makeSync = Effect.fnUntraced(function* ({
     ),
   );
 
-  const recover = Effect.flatMap(recoverJobs, (reset) =>
-    Effect.map(commentWork.recoverActions, (actions) => reset + actions),
+  const recover = Effect.map(
+    Effect.all([recoverJobs, commentWork.recoverActions, commentWork.recoverFirstComments]),
+    (counts) => counts.reduce((sum, n) => sum + n, 0),
   );
 
   function claimNext(db: Db, at: Date, exclude: Platform[]): (Job & { platform: Platform }) | null {
@@ -321,30 +322,42 @@ export const makeSync = Effect.fnUntraced(function* ({
       if (Option.isNone(fiber)) break;
       started.push(fiber.value);
     }
-    // Then the outbox, with whatever room is left.
-    while ((yield* FiberSet.size(jobs)) < concurrency) {
-      const fiber = yield* Effect.uninterruptible(
-        Effect.flatMap(
-          database.transaction(database.use((db) => commentWork.claimAction(db, at))),
-          (action) =>
-            action
-              ? Effect.asSome(
-                  FiberSet.run(
-                    jobs,
-                    commentWork
-                      .runAction(action)
-                      .pipe(
+    // Then the outbox and first comments, with whatever room is left.
+    const queues = [
+      {
+        label: '[inbox]',
+        claim: (db: Db) => commentWork.claimAction(db, at),
+        run: commentWork.runAction,
+      },
+      {
+        label: '[first comment]',
+        claim: (db: Db) => commentWork.claimFirstComment(db, at),
+        run: commentWork.runFirstComment,
+      },
+    ] as const;
+    for (const queue of queues) {
+      while ((yield* FiberSet.size(jobs)) < concurrency) {
+        const fiber = yield* Effect.uninterruptible(
+          Effect.flatMap(
+            database.transaction(database.use((db) => queue.claim(db))),
+            (item: { id: string } | null) =>
+              item
+                ? Effect.asSome(
+                    FiberSet.run(
+                      jobs,
+                      (queue.run as (item: unknown) => Effect.Effect<void, unknown>)(item).pipe(
                         Effect.catchCause((cause) =>
-                          Effect.logError(`[inbox] ${action.id}`, cause),
+                          Effect.logError(`${queue.label} ${item.id}`, cause),
                         ),
                       ),
-                  ),
-                )
-              : Effect.succeedNone,
-        ),
-      );
-      if (Option.isNone(fiber)) break;
-      started.push(fiber.value);
+                    ),
+                  )
+                : Effect.succeedNone,
+          ),
+        );
+        if (Option.isNone(fiber)) break;
+        started.push(fiber.value);
+      }
     }
     return started;
   });

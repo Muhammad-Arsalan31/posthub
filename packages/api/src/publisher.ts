@@ -45,8 +45,9 @@ import { ProviderApps } from './provider-apps';
 import { insertSyncJob } from './sync';
 import { Database, type DatabaseError, MediaDir } from './services';
 
-/** Waits before retry 1, 2 and 3 of a retryable failure (429, 5xx, still processing). */
-export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+import { RETRY_DELAYS_MS } from './retry';
+
+export { RETRY_DELAYS_MS };
 
 /** First metrics read after publishing: soon enough to show early numbers. */
 const FIRST_METRICS_DELAY_MS = 15 * 60_000;
@@ -307,7 +308,9 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
           { retryable: false },
         );
       }
-      const adapter = (yield* providerApps.current).adapter(account.platform);
+      const integrations = yield* providerApps.current;
+      const adapter = integrations.adapter(account.platform);
+      const canComment = Boolean(integrations.engagement(account.platform));
       if (!adapter) {
         const label =
           PROVIDERS.find((p) => p.platforms.includes(account.platform))?.label ?? platform;
@@ -362,6 +365,8 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
         // Kept on published targets so the owner sees partial problems (e.g. no thumbnail).
         lastError: result.warning ?? null,
         nextAttemptAt: null,
+        // The sync worker posts the first comment as its own step, so it can't affect the post.
+        firstCommentStatus: content.firstComment?.trim() && canComment ? 'pending' : 'none',
       });
       yield* Effect.logInfo(`[publisher] published ${target.id} to ${platform}`);
     });

@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Anchor,
   Badge,
   Button,
@@ -23,6 +24,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import dayjs from 'dayjs';
 import { useState } from 'react';
 import { postsCollection, type Post, type PostTarget } from '../../collections/posts';
+import { needsPin } from '../../components/first-comment';
 import { totalsText } from '../../components/post-metrics';
 import { bodyToText } from '../../lib/body';
 import { api, client } from '../../lib/api';
@@ -68,6 +70,7 @@ function PostsPage() {
   const counts = new Map<string, number>();
   for (const post of posts) counts.set(post.status, (counts.get(post.status) ?? 0) + 1);
   const visible = filter === 'all' ? posts : posts.filter((p) => p.status === filter);
+  const toPin = posts.filter((p) => p.targets.some((t) => needsPin(p, t)));
 
   function duplicate(post: Post) {
     const now = new Date();
@@ -114,6 +117,24 @@ function PostsPage() {
           New post
         </Button>
       </Group>
+
+      {toPin.length > 0 && (
+        <Alert color="grape" title="Comments to pin">
+          <Stack gap={4}>
+            {toPin.map((post) => (
+              <Anchor
+                key={post.id}
+                size="sm"
+                renderRoot={(rootProps) => (
+                  <Link {...rootProps} to="/posts/$postId" params={{ postId: post.id }} />
+                )}
+              >
+                {post.title}
+              </Anchor>
+            ))}
+          </Stack>
+        </Alert>
+      )}
 
       <SegmentedControl
         value={filter}

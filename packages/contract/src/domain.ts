@@ -63,6 +63,11 @@ export const PostTarget = Schema.Struct({
   externalUrl: Schema.NullOr(Schema.String),
   publishedAt: Schema.NullOr(Schema.Date),
   nextAttemptAt: Schema.NullOr(Schema.Date),
+  /** The first comment, posted after the post itself. */
+  firstCommentStatus: Schema.Literals(['none', 'pending', 'posting', 'posted', 'failed']),
+  firstCommentError: Schema.NullOr(Schema.String),
+  /** The owner confirmed they pinned the first comment. */
+  pinnedAt: Schema.NullOr(Schema.Date),
 });
 export type PostTarget = typeof PostTarget.Type;
 
@@ -79,6 +84,9 @@ export const Post = Schema.Struct({
   /** YouTube custom thumbnail. */
   thumbnailMediaId: Schema.NullOr(Schema.String),
   wordpressOptions: Schema.NullOr(WordPressOptions),
+  /** Posted as a comment right after the post, where the platform allows. */
+  firstComment: Schema.NullOr(Schema.String),
+  pinFirstComment: Schema.Boolean,
   status: PostStatus,
   scheduledAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,

@@ -232,6 +232,11 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
   `deletedAt`. Every write (reply, like, hide, delete) goes into `comment_action` first and the sync worker sends it.
   A reply whose outcome is unknown (network failure, found `sending` at startup, or retried by the owner) gets
   `checkFirst`: the worker reads the post's comments and only resends when no own comment with the same text exists.
+- **First comment:** `post.firstComment` is posted under the post by the sync worker as its own step
+  (`post_target.firstCommentStatus`), so it never fails or reposts the post: the publisher only sets it `pending` in the
+  same `finish` update that publishes the target. It follows the reply rules (`firstCommentCheck` before any resend).
+  No platform lets apps pin comments: `pinFirstComment` gives the owner a link and steps, and `posts.markPinned` records it.
+  Comment rules (length, Instagram's 30 hashtags) live in `firstCommentProblem` (post-rules.ts, mirrored in platforms.ts).
 - **Queue:** `queue_slot` rows are weekly wall-clock times in the owner's time zone (`app_setting` key `timezone`, sent by
   the browser when slots are saved). `posts.enqueue` picks the first future slot no scheduled post has, inside one
   synchronous transaction, so concurrent enqueues get different slots.

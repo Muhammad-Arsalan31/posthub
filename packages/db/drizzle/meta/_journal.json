@@ -71,6 +71,13 @@
       "when": 1794832481626,
       "tag": "0009_steady_george_stacy",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1794833443042,
+      "tag": "0010_illegal_mephisto",
+      "breakpoints": true
     }
   ]
 }

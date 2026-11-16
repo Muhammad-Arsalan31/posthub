@@ -1,6 +1,6 @@
 // Facebook Page and Instagram comments through the Graph API.
 import { Effect } from 'effect';
-import { platformError } from '../errors';
+import { platformError, reason } from '../errors';
 import { del, form, get, post, type Http } from '../http';
 import type { EngagementAdapter, RemoteComment } from '../types';
 import type { FacebookPageCredentials, InstagramCredentials } from './meta';
@@ -33,6 +33,29 @@ interface Page<T> {
   data?: T[];
   paging?: { cursors?: { after?: string }; next?: string };
 }
+
+/** A comment the account just wrote. */
+const ownComment = (
+  externalId: string,
+  parentExternalId: string | null,
+  text: string,
+  authorId: string,
+): RemoteComment => ({
+  externalId,
+  parentExternalId,
+  authorName: 'You',
+  authorAvatarUrl: null,
+  authorId,
+  text,
+  likeCount: 0,
+  likedByMe: false,
+  createdAt: new Date(),
+  isOwn: true,
+  hidden: false,
+});
+
+/** Instagram's wording for media it can't take comments on yet. */
+const NOT_READY = /not (yet )?(ready|available)|try again|processing/i;
 
 const IG_FIELDS = 'id,text,timestamp,like_count,hidden,username,from{id,username}';
 
@@ -110,6 +133,17 @@ export function createMetaEngagement(graph: string, http: Http) {
           hidden: false,
         };
       }),
+
+    postComment: ({ pageId, pageAccessToken }, postId, text) =>
+      Effect.map(
+        call<{ id: string }>(
+          'facebook',
+          post(`${graph}/${postId}/comments`, {
+            body: form({ message: text, access_token: pageAccessToken }),
+          }),
+        ),
+        ({ id }) => ownComment(id, null, text, pageId),
+      ),
 
     setLike: ({ pageAccessToken }, ref, liked) =>
       Effect.asVoid(
@@ -207,6 +241,22 @@ export function createMetaEngagement(graph: string, http: Http) {
           hidden: false,
         };
       }),
+
+    postComment: ({ igUserId, accessToken }, mediaId, text) =>
+      call<{ id: string }>(
+        'instagram',
+        post(`${graph}/${mediaId}/comments`, {
+          body: form({ message: text, access_token: accessToken }),
+        }),
+      ).pipe(
+        Effect.map(({ id }) => ownComment(id, null, text, igUserId)),
+        // Fresh media can refuse comments for a moment: that is worth retrying.
+        Effect.mapError((error) =>
+          error._tag === 'PlatformError' && !error.retryable && NOT_READY.test(error.message)
+            ? platformError('instagram', reason(error), { status: error.status, retryable: true })
+            : error,
+        ),
+      ),
 
     setLike: () =>
       Effect.fail(

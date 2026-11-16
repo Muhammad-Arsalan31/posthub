@@ -53,6 +53,8 @@ const post = (id: string, status: Post['status'], scheduledAt: Date | null): Pos
   featuredMediaId: null,
   thumbnailMediaId: null,
   wordpressOptions: null,
+  firstComment: null,
+  pinFirstComment: false,
   status,
   scheduledAt,
   createdAt: new Date(),

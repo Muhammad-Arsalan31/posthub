@@ -4,6 +4,7 @@ import { useLiveQuery } from '@tanstack/react-db';
 import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import { postsCollection } from '../../collections/posts';
 import { PostEditor } from '../../components/post-editor';
+import { FirstCommentStatus } from '../../components/first-comment';
 import { PostMetrics } from '../../components/post-metrics';
 import { api } from '../../lib/api';
 
@@ -35,6 +36,7 @@ function EditPostPage() {
             This post has started publishing, so it can no longer be edited. Duplicate it from the
             Posts page to make changes.
           </Alert>
+          <FirstCommentStatus post={post} accounts={accounts.data ?? []} />
           <PostMetrics post={post} accounts={accounts.data ?? []} />
           {post.targets.some((t) => t.status === 'published') && (
             <Anchor

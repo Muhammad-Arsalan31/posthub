@@ -15,6 +15,7 @@ import { Cause, Clock, Effect } from 'effect';
 import type { CredentialAccess } from './accounts';
 import type { ProviderAppsService } from './provider-apps';
 import type { DatabaseService } from './services';
+import { RETRY_DELAYS_MS } from './retry';
 import { nextMetricsRun } from './sync-schedule';
 
 const MINUTE = 60_000;
@@ -328,7 +329,147 @@ export function makeCommentWork({ database, providerApps, credentialAccess }: De
     });
   });
 
-  return { syncTarget, claimAction, runAction, recoverActions };
+  /** Atomically takes the next first comment due to be posted, or null. */
+  function claimFirstComment(db: Db, at: Date) {
+    const next = db
+      .select({ id: postTarget.id, attempts: postTarget.firstCommentAttempts })
+      .from(postTarget)
+      .where(
+        and(
+          eq(postTarget.firstCommentStatus, 'pending'),
+          or(isNull(postTarget.firstCommentNextAt), lte(postTarget.firstCommentNextAt, at)),
+        ),
+      )
+      .limit(1)
+      .get();
+    if (!next) return null;
+    db.update(postTarget)
+      .set({ firstCommentStatus: 'posting', firstCommentAttempts: next.attempts + 1 })
+      .where(eq(postTarget.id, next.id))
+      .run();
+    return { id: next.id, attempts: next.attempts + 1 };
+  }
+
+  /** First comments left `posting` by a crash: back to pending, checking the platform first. */
+  const recoverFirstComments = database.use(
+    (db) =>
+      db
+        .update(postTarget)
+        .set({ firstCommentStatus: 'pending', firstCommentCheck: true })
+        .where(eq(postTarget.firstCommentStatus, 'posting'))
+        .run().changes,
+  );
+
+  const setFirstComment = (targetId: string, changes: Partial<typeof postTarget.$inferInsert>) =>
+    database.use((db) =>
+      db.update(postTarget).set(changes).where(eq(postTarget.id, targetId)).run(),
+    );
+
+  const runFirstComment = (claimed: { id: string; attempts: number }) =>
+    Effect.gen(function* () {
+      const loaded = yield* database.use((db) => {
+        const target = loadTarget(db, claimed.id);
+        const row = db
+          .select({ text: post.firstComment, check: postTarget.firstCommentCheck })
+          .from(postTarget)
+          .innerJoin(post, eq(post.id, postTarget.postId))
+          .where(eq(postTarget.id, claimed.id))
+          .get();
+        return target && row ? { target, text: row.text?.trim(), check: row.check } : undefined;
+      });
+      if (!loaded?.text || !loaded.target.externalPostId) {
+        return yield* setFirstComment(claimed.id, { firstCommentStatus: 'none' });
+      }
+      const { target, text, check } = loaded;
+      const ready = yield* prepare(target);
+      if (ready._tag !== 'ready') {
+        return yield* setFirstComment(claimed.id, {
+          firstCommentStatus: 'failed',
+          firstCommentError:
+            ready._tag === 'paused'
+              ? 'Reconnect this account on the Accounts page, then retry.'
+              : 'This platform does not take comments from PostHub.',
+        });
+      }
+      if (check) {
+        // An earlier attempt may have posted it: look before sending again.
+        const { comments, full } = yield* readAll(ready.adapter, ready.credentials, target);
+        yield* store(target, comments, full);
+        const existing = comments.find(
+          (c) => c.isOwn && !c.parentExternalId && c.text.trim() === text,
+        );
+        if (existing) {
+          return yield* setFirstComment(claimed.id, {
+            firstCommentStatus: 'posted',
+            firstCommentExternalId: existing.externalId,
+            firstCommentError: null,
+            firstCommentCheck: false,
+          });
+        }
+      }
+      const posted = yield* ready.adapter.postComment(
+        ready.credentials,
+        target.externalPostId!,
+        text,
+      );
+      // It exists now: record it, and never fail from here on.
+      yield* store(target, [posted], false).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning('[first comment] not stored in the inbox', cause),
+        ),
+      );
+      yield* setFirstComment(claimed.id, {
+        firstCommentStatus: 'posted',
+        firstCommentExternalId: posted.externalId,
+        firstCommentError: null,
+        firstCommentCheck: false,
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logError('[first comment] posted but not recorded', cause),
+        ),
+      );
+    }).pipe(
+      Effect.catchCause((cause) => firstCommentFailed(claimed, cause)),
+      Effect.uninterruptible,
+    );
+
+  const firstCommentFailed = Effect.fnUntraced(function* (
+    claimed: { id: string; attempts: number },
+    cause: Cause.Cause<unknown>,
+  ) {
+    const now = yield* Clock.currentTimeMillis;
+    const error = Cause.squash(cause);
+    const message = error instanceof Error ? error.message : String(error);
+    const delay = RETRY_DELAYS_MS[claimed.attempts - 1];
+    const later = delay === undefined ? null : new Date(now + delay);
+    if (error instanceof PlatformError) {
+      return yield* setFirstComment(claimed.id, {
+        firstCommentStatus: error.retryable && later ? 'pending' : 'failed',
+        firstCommentNextAt: later,
+        firstCommentError: error.message,
+      });
+    }
+    yield* Effect.logError(`[first comment] ${claimed.id}`, cause);
+    // Unknown outcome: check the platform before any resend.
+    yield* setFirstComment(claimed.id, {
+      firstCommentStatus: later ? 'pending' : 'failed',
+      firstCommentNextAt: later,
+      firstCommentCheck: true,
+      firstCommentError: later
+        ? message
+        : `${message}. PostHub could not confirm whether the comment was posted; check before retrying.`,
+    });
+  });
+
+  return {
+    syncTarget,
+    claimAction,
+    runAction,
+    recoverActions,
+    claimFirstComment,
+    runFirstComment,
+    recoverFirstComments,
+  };
 }
 
 /** Comments of the owner's targets, for scoping checks. */

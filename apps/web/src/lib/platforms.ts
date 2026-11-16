@@ -83,3 +83,42 @@ export function formatBytes(bytes: number) {
 }
 
 export const mediaUrl = (id: string) => `/files/${id}`;
+
+/** Longest first comment each platform takes (Instagram also allows at most 30 hashtags). */
+export const FIRST_COMMENT_LIMITS: Partial<Record<Platform, number>> = {
+  youtube: 10_000,
+  facebook: 8_000,
+  instagram: 2_200,
+};
+
+/** Platforms PostHub can post a first comment on (mirrors the server's comment connectors). */
+export const FIRST_COMMENT_PLATFORMS: Platform[] = [
+  'youtube',
+  'facebook',
+  'instagram',
+  'wordpress',
+];
+
+/** How each platform handles pinning, for the composer and the post page. */
+export const PIN_NOTES: Record<Platform, string> = {
+  youtube: 'Pin it in YouTube Studio: Comments, then ⋮ next to the comment, then Pin.',
+  facebook: 'Pin it on the post: ⋯ next to the comment, then Pin comment.',
+  instagram: 'Pin it in the Instagram app: swipe left on the comment, then tap the pin.',
+  linkedin: 'LinkedIn has no pinned comments, and PostHub cannot comment there yet.',
+  wordpress: 'WordPress has no pinned comments.',
+  tiktok: 'TikTok is posted by hand: add and pin the comment in the app.',
+};
+
+/** Mirrors firstCommentProblem in packages/api/src/post-rules.ts. */
+export function firstCommentProblem(platform: Platform, comment: string): string | null {
+  const text = comment.trim();
+  if (!text) return null;
+  const limit = FIRST_COMMENT_LIMITS[platform];
+  if (limit && text.length > limit) {
+    return `The first comment is too long for this platform (at most ${limit.toLocaleString()} characters).`;
+  }
+  if (platform === 'instagram' && (text.match(/#[\p{L}\p{N}_]+/gu)?.length ?? 0) > 30) {
+    return 'Instagram allows at most 30 hashtags in a comment.';
+  }
+  return null;
+}

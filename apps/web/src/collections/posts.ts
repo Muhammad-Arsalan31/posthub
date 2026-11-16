@@ -22,6 +22,8 @@ function editableFields(post: Partial<Post>) {
   if (post.featuredMediaId !== undefined) fields.featuredMediaId = post.featuredMediaId;
   if (post.thumbnailMediaId !== undefined) fields.thumbnailMediaId = post.thumbnailMediaId;
   if (post.wordpressOptions !== undefined) fields.wordpressOptions = post.wordpressOptions;
+  if (post.firstComment !== undefined) fields.firstComment = post.firstComment;
+  if (post.pinFirstComment !== undefined) fields.pinFirstComment = post.pinFirstComment;
   return fields;
 }
 

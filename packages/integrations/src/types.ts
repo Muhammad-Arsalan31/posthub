@@ -179,6 +179,12 @@ export interface EngagementAdapter<C> {
     cursor?: string,
   ): Effect.Effect<{ comments: RemoteComment[]; next?: string }, PublishError>;
   reply(credentials: C, ref: CommentRef, text: string): Effect.Effect<RemoteComment, PublishError>;
+  /** A new top-level comment on a post (the "first comment"). Must not fail once created. */
+  postComment(
+    credentials: C,
+    externalPostId: string,
+    text: string,
+  ): Effect.Effect<RemoteComment, PublishError>;
   setLike(credentials: C, ref: CommentRef, liked: boolean): Effect.Effect<void, PublishError>;
   moderate(
     credentials: C,

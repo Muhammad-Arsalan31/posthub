@@ -60,3 +60,27 @@ export function platformProblem(
 
 /** TikTok has no API for private tools: those targets are handed off to the owner. */
 export const isManualPlatform = (platform: Platform) => platform === 'tiktok';
+
+const FIRST_COMMENT_LIMITS: Partial<Record<Platform, number>> = {
+  youtube: 10_000,
+  facebook: 8_000,
+  instagram: 2_200,
+};
+
+/**
+ * Why the first comment can't go to `platform`, or null. Platforms without comment support
+ * (LinkedIn, TikTok) are not a problem: the comment is just not posted there.
+ * apps/web/src/lib/platforms.ts mirrors this.
+ */
+export function firstCommentProblem(platform: Platform, comment: string | null): string | null {
+  const text = comment?.trim();
+  if (!text) return null;
+  const limit = FIRST_COMMENT_LIMITS[platform];
+  if (limit && text.length > limit) {
+    return `The first comment is too long for this platform (at most ${limit.toLocaleString()} characters).`;
+  }
+  if (platform === 'instagram' && (text.match(/#[\p{L}\p{N}_]+/gu)?.length ?? 0) > 30) {
+    return 'Instagram allows at most 30 hashtags in a comment.';
+  }
+  return null;
+}

@@ -28,10 +28,12 @@ import {
   PLATFORM_COLORS,
   PLATFORM_LABELS,
   PLATFORM_NOTES,
+  firstCommentProblem,
   platformProblem,
   type MediaItem,
 } from '../lib/platforms';
 import { bodyToText } from '../lib/body';
+import { FirstCommentField } from './first-comment';
 import { ImagePicker } from './image-picker';
 import { RichTextInput } from './rich-text';
 import { WordPressOptions, type WordPressOptionsValue } from './wordpress-options';
@@ -89,6 +91,8 @@ export function PostEditor(props: {
     existing?.wordpressOptions ?? { tags: [], categories: {} },
   );
   const [link, setLink] = useState(existing?.link ?? '');
+  const [firstComment, setFirstComment] = useState(existing?.firstComment ?? '');
+  const [pinFirstComment, setPinFirstComment] = useState(existing?.pinFirstComment ?? false);
   const [accountIds, setAccountIds] = useState<string[]>(existing?.accountIds ?? []);
   const [mediaIds, setMediaIds] = useState<string[]>(existing?.mediaIds ?? []);
   const [scheduledAt, setScheduledAt] = useState<Date | null>(
@@ -127,16 +131,18 @@ export function PostEditor(props: {
   const selected = (accounts.data ?? []).filter((a) => accountIds.includes(a.id));
   const problems = selected.flatMap((account) => {
     if (account.status !== 'active') return [{ account, message: 'Reconnect this account first.' }];
-    const message = platformProblem(
-      account.platform,
-      {
-        text: bodyText,
-        link: linkValue,
-        media,
-        thumbnail,
-      },
-      { hasMediaHost: Boolean(mediaHost.data) },
-    );
+    const message =
+      firstCommentProblem(account.platform, firstComment) ??
+      platformProblem(
+        account.platform,
+        {
+          text: bodyText,
+          link: linkValue,
+          media,
+          thumbnail,
+        },
+        { hasMediaHost: Boolean(mediaHost.data) },
+      );
     return message ? [{ account, message }] : [];
   });
   const effectiveTitle = title.trim() || titleFromBody(bodyText);
@@ -169,6 +175,8 @@ export function PostEditor(props: {
       featuredMediaId,
       thumbnailMediaId,
       wordpressOptions: wordpressOptionsFor(wordpress, accountIds),
+      firstComment: firstComment.trim() || null,
+      pinFirstComment: Boolean(firstComment.trim()) && pinFirstComment,
       // Queued posts are saved as drafts first; the server then picks the slot.
       status:
         action === 'draft' || action === 'queue' ? ('draft' as const) : ('scheduled' as const),
@@ -243,6 +251,13 @@ export function PostEditor(props: {
             value={link}
             onChange={(e) => setLink(e.currentTarget.value)}
             error={linkError}
+          />
+          <FirstCommentField
+            value={firstComment}
+            onChange={setFirstComment}
+            pin={pinFirstComment}
+            onPinChange={setPinFirstComment}
+            platforms={[...new Set(selected.map((a) => a.platform))]}
           />
 
           <Stack gap="xs">

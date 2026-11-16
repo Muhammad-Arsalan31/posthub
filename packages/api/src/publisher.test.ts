@@ -72,6 +72,7 @@ const setup = Effect.fnUntraced(function* (
         body?: string;
         featuredMediaId?: string;
         wordpressOptions?: { tags: string[]; categories: Record<string, number[]> };
+        firstComment?: string;
       } = {},
     ) =>
       Effect.promise(() =>
@@ -211,6 +212,22 @@ describe('publisher', () => {
         lastError: 'wordpress: busy',
       });
       expect(state(db, id).post.status).toBe('failed');
+    }),
+  );
+
+  it.effect('queues the first comment with the publish, as its own step', () =>
+    Effect.gen(function* () {
+      const { db, publisher, schedule } = yield* setup();
+      const withComment = yield* schedule(new Date('2030-01-01T08:00:00Z'), {
+        firstComment: 'Hi!',
+      });
+      const without = yield* schedule(new Date('2030-01-01T08:00:00Z'));
+      yield* publisher.tick;
+      expect(state(db, withComment.id).target).toMatchObject({
+        status: 'published',
+        firstCommentStatus: 'pending',
+      });
+      expect(state(db, without.id).target.firstCommentStatus).toBe('none');
     }),
   );
 

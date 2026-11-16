@@ -96,6 +96,17 @@ export function createWordPressEngagement(http: Http): EngagementAdapter<WordPre
         return { ...toComment(data, data.author), isOwn: true, text };
       }),
 
+    postComment: (credentials, postId, text) =>
+      Effect.map(
+        call<WordPressComment>(
+          post(endpoint(credentials.apiBase, '/wp/v2/comments'), {
+            headers: basicAuth(credentials),
+            body: json({ post: Number(postId), content: text }),
+          }),
+        ),
+        ({ data }) => ({ ...toComment(data, data.author), isOwn: true, text }),
+      ),
+
     setLike: () =>
       Effect.fail(
         platformError('wordpress', 'WordPress comments cannot be liked.', { retryable: false }),
