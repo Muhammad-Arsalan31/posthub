@@ -4,24 +4,19 @@ import {
   Badge,
   Button,
   Card,
-  Code,
-  CopyButton,
   Group,
   Loader,
-  Modal,
-  PasswordInput,
   SimpleGrid,
   Stack,
   Table,
   Text,
-  TextInput,
   Title,
 } from '@mantine/core';
-import { useDisclosure } from '@mantine/hooks';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { createFileRoute, useNavigate } from '@tanstack/react-router';
-import { useState, type FormEvent } from 'react';
+import { useState } from 'react';
 import type { Provider } from '@posthub/contract';
+import { ConnectGuide, type GuideStart } from '../../components/connect-guide';
 import { api } from '../../lib/api';
 
 const PLATFORM_LABELS: Record<string, string> = {
@@ -56,8 +51,10 @@ function AccountsPage() {
   const queryClient = useQueryClient();
   const accounts = useQuery(api.accounts.list.queryOptions());
   const providers = useQuery(api.accounts.providers.queryOptions());
-  const [wordPressOpen, wordPress] = useDisclosure(false);
-  const [setupFor, setSetupFor] = useState<Provider | null>(null);
+  // Track the provider by id so the guide sees fresh data (e.g. `configured`) after a save.
+  const [guide, setGuide] = useState<{ id: Provider['id']; start: GuideStart } | null>(null);
+  const guideProvider = guide && providers.data?.find((p) => p.id === guide.id);
+  const openGuide = (provider: Provider, start: GuideStart) => setGuide({ id: provider.id, start });
 
   const refresh = () => queryClient.invalidateQueries({ queryKey: api.accounts.key() });
   const disconnect = useMutation(api.accounts.disconnect.mutationOptions({ onSuccess: refresh }));
@@ -150,209 +147,46 @@ function AccountsPage() {
               </Group>
 
               {provider.kind === 'credentials' ? (
-                <Button onClick={wordPress.open}>Connect a site</Button>
+                <Button onClick={() => openGuide(provider, 'connect')}>Connect a site</Button>
               ) : provider.configured ? (
                 <Group grow>
                   <Button component="a" href={`/connect/${provider.id}/start`}>
                     Connect {provider.label}
                   </Button>
-                  <Button variant="default" onClick={() => setSetupFor(provider)}>
+                  <Button variant="default" onClick={() => openGuide(provider, 'credentials')}>
                     App settings
                   </Button>
                 </Group>
               ) : (
-                <Button variant="light" onClick={() => setSetupFor(provider)}>
+                <Button variant="light" onClick={() => openGuide(provider, 'start')}>
                   Set up {provider.label}
                 </Button>
               )}
 
-              <Anchor href={provider.setupUrl} target="_blank" rel="noreferrer" size="xs">
-                {provider.kind === 'oauth'
-                  ? 'Open developer console'
-                  : 'About Application Passwords'}
-              </Anchor>
+              <Group gap="md">
+                <Anchor component="button" size="xs" onClick={() => openGuide(provider, 'start')}>
+                  Step-by-step guide
+                </Anchor>
+                <Anchor href={provider.setupUrl} target="_blank" rel="noreferrer" size="xs">
+                  {provider.kind === 'oauth'
+                    ? 'Open developer console'
+                    : 'About Application Passwords'}
+                </Anchor>
+              </Group>
             </Stack>
           </Card>
         ))}
       </SimpleGrid>
 
-      {setupFor && (
-        <AppSetupModal
-          key={setupFor.id}
-          provider={setupFor}
-          onClose={() => setSetupFor(null)}
-          onSaved={() => {
-            setSetupFor(null);
-            void refresh();
-          }}
+      {guideProvider && guide && (
+        <ConnectGuide
+          key={`${guide.id}-${guide.start}`}
+          provider={guideProvider}
+          start={guide.start}
+          onClose={() => setGuide(null)}
+          onChanged={() => void refresh()}
         />
       )}
-
-      <WordPressModal
-        opened={wordPressOpen}
-        onClose={wordPress.close}
-        onConnected={() => {
-          wordPress.close();
-          void refresh();
-        }}
-      />
     </Stack>
-  );
-}
-
-const APP_HELP: Record<string, { idLabel: string; secretLabel: string; steps: string }> = {
-  google: {
-    idLabel: 'Client ID',
-    secretLabel: 'Client secret',
-    steps:
-      'Google Cloud Console: enable “YouTube Data API v3”, configure the OAuth consent screen, then create an OAuth client ID of type “Web application”.',
-  },
-  meta: {
-    idLabel: 'App ID',
-    secretLabel: 'App secret',
-    steps:
-      'Meta for Developers: create a Business app, add “Facebook Login for Business”, then copy the App ID and secret from App settings → Basic.',
-  },
-  linkedin: {
-    idLabel: 'Client ID',
-    secretLabel: 'Client secret',
-    steps:
-      'LinkedIn Developers: create an app, add the products “Sign In with LinkedIn using OpenID Connect” and “Share on LinkedIn”, then open the Auth tab.',
-  },
-};
-
-function AppSetupModal(props: { provider: Provider; onClose: () => void; onSaved: () => void }) {
-  const { provider } = props;
-  const help = APP_HELP[provider.id];
-  const [clientId, setClientId] = useState(provider.clientId ?? '');
-  const [clientSecret, setClientSecret] = useState('');
-  const save = useMutation(api.providerApps.save.mutationOptions({ onSuccess: props.onSaved }));
-  const remove = useMutation(api.providerApps.remove.mutationOptions({ onSuccess: props.onSaved }));
-  const redirectUrl = `${window.location.origin}/connect/${provider.id}/callback`;
-  const providerId = provider.id === 'wordpress' ? null : provider.id;
-  const failure = save.error ?? remove.error;
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    if (providerId) save.mutate({ provider: providerId, clientId, clientSecret });
-  }
-
-  return (
-    <Modal opened onClose={props.onClose} title={`${provider.label} app`}>
-      <form onSubmit={submit}>
-        <Stack>
-          {help && (
-            <Text size="sm" c="dimmed">
-              {help.steps}
-            </Text>
-          )}
-          <div>
-            <Text size="sm" fw={500}>
-              Redirect URL
-            </Text>
-            <Text size="xs" c="dimmed" mb={4}>
-              Add this exact URL to the app’s allowed redirect URLs.
-            </Text>
-            <Group gap="xs" wrap="nowrap">
-              <Code style={{ flex: 1, overflowWrap: 'anywhere' }}>{redirectUrl}</Code>
-              <CopyButton value={redirectUrl}>
-                {({ copied, copy }) => (
-                  <Button size="xs" variant="default" onClick={copy}>
-                    {copied ? 'Copied' : 'Copy'}
-                  </Button>
-                )}
-              </CopyButton>
-            </Group>
-          </div>
-          <TextInput
-            label={help?.idLabel ?? 'Client ID'}
-            value={clientId}
-            onChange={(e) => setClientId(e.currentTarget.value)}
-            required
-          />
-          <PasswordInput
-            label={help?.secretLabel ?? 'Client secret'}
-            placeholder={provider.configured ? 'Leave blank to keep the current secret' : undefined}
-            value={clientSecret}
-            onChange={(e) => setClientSecret(e.currentTarget.value)}
-            required={!provider.configured}
-          />
-          <Text size="xs" c="dimmed">
-            Stored encrypted on this computer and used right away. Switching to a different app
-            later means reconnecting its accounts.
-          </Text>
-          {failure && <Alert color="red">{failure.message}</Alert>}
-          <Group justify="space-between">
-            {provider.source === 'database' && providerId ? (
-              <Button
-                variant="subtle"
-                color="red"
-                loading={remove.isPending}
-                onClick={() => remove.mutate({ provider: providerId })}
-              >
-                Remove
-              </Button>
-            ) : (
-              <span />
-            )}
-            <Button type="submit" loading={save.isPending}>
-              Save
-            </Button>
-          </Group>
-        </Stack>
-      </form>
-    </Modal>
-  );
-}
-
-function WordPressModal(props: { opened: boolean; onClose: () => void; onConnected: () => void }) {
-  const [siteUrl, setSiteUrl] = useState('');
-  const [username, setUsername] = useState('');
-  const [appPassword, setAppPassword] = useState('');
-  const connect = useMutation(
-    api.accounts.connectWordPress.mutationOptions({
-      onSuccess: () => {
-        setAppPassword('');
-        props.onConnected();
-      },
-    }),
-  );
-
-  function submit(event: FormEvent) {
-    event.preventDefault();
-    connect.mutate({ siteUrl, username, appPassword });
-  }
-
-  return (
-    <Modal opened={props.opened} onClose={props.onClose} title="Connect a WordPress site">
-      <form onSubmit={submit}>
-        <Stack>
-          <TextInput
-            label="Site URL"
-            placeholder="https://example.com"
-            value={siteUrl}
-            onChange={(e) => setSiteUrl(e.currentTarget.value)}
-            required
-          />
-          <TextInput
-            label="Username"
-            value={username}
-            onChange={(e) => setUsername(e.currentTarget.value)}
-            required
-          />
-          <PasswordInput
-            label="Application Password"
-            description="WordPress admin → Users → Profile → Application Passwords"
-            value={appPassword}
-            onChange={(e) => setAppPassword(e.currentTarget.value)}
-            required
-          />
-          {connect.error && <Alert color="red">{connect.error.message}</Alert>}
-          <Button type="submit" loading={connect.isPending}>
-            Connect
-          </Button>
-        </Stack>
-      </form>
-    </Modal>
   );
 }

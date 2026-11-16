@@ -318,6 +318,11 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
                   );
                 })
               )}
+              {!!accounts.data?.length && (
+                <Anchor component={Link} to="/accounts" size="sm">
+                  Connect another account
+                </Anchor>
+              )}
             </Stack>
           </Card>
 

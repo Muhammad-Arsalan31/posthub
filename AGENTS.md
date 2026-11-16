@@ -148,6 +148,8 @@ not add `tsx`/`ts-node`. Note that `vp check` is a built-in command and `vp run 
   Read `(yield* ProviderApps).current` for the connectors as configured right now (per use, not once at startup), and
   `save`/`remove` on the same service to change app credentials.
   Secrets are never returned to the client.
+- The Accounts page walks the owner through each connect flow (`apps/web/src/lib/setup-guides.tsx`, shown by
+  `components/connect-guide.tsx`). When a connector's scopes, products or redirect URLs change, update its guide too.
 - API versions are pinned: Meta Graph `v26.0` (`META_GRAPH_VERSION`), LinkedIn `202608` (`LINKEDIN_API_VERSION`).
   LinkedIn retires versions after about a year and returns 426 `NONEXISTENT_VERSION`.
 - Test connectors with `createFakeFetch` routes (`"METHOD url-prefix"`, first match wins, so list longer prefixes first).
