@@ -171,7 +171,7 @@ export function MediaLibraryModal(props: {
   );
 }
 
-export function RemoveButton(props: { label: string; onClick: () => void }) {
+export function RemoveButton(props: { label: string; onClick: () => void; disabled?: boolean }) {
   return (
     <ActionIcon
       pos="absolute"
@@ -182,6 +182,7 @@ export function RemoveButton(props: { label: string; onClick: () => void }) {
       color="dark"
       variant="filled"
       aria-label={props.label}
+      disabled={props.disabled}
       onClick={props.onClick}
     >
       ✕
