@@ -22,8 +22,6 @@ import {
   PlatformError,
   platformError,
   PROVIDERS,
-  refreshIfExpiring,
-  Vault,
   type MediaFile,
 } from '@posthub/integrations';
 import { and, asc, eq, isNull, lte, notInArray, or, type SQL } from 'drizzle-orm';
@@ -40,6 +38,7 @@ import {
   Schedule,
   type Scope,
 } from 'effect';
+import { makeCredentialAccess } from './accounts';
 import { inlineMediaIds, inlineRef } from './inline-media';
 import { MediaHosts } from './media-hosts';
 import { ProviderApps } from './provider-apps';
@@ -98,7 +97,8 @@ const now = Effect.map(Clock.currentTimeMillis, (ms) => new Date(ms));
 
 export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: PublisherOptions) {
   const database = yield* Database;
-  const vault = yield* Vault;
+  // Refreshes and stores tokens; marks the account expired when a refresh is rejected.
+  const credentialAccess = yield* makeCredentialAccess;
   const providerApps = yield* ProviderApps;
   const mediaHosts = yield* MediaHosts;
   const mediaDir = yield* MediaDir;
@@ -304,20 +304,10 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
       }
 
       phase = 'refresh';
-      let credentials = yield* vault.decrypt(account.credentials);
-      const refreshed = yield* refreshIfExpiring(adapter, credentials, account.tokenExpiresAt);
-      if (refreshed) {
-        credentials = refreshed.credentials;
-        const stored = vault.encrypt(refreshed.credentials);
-        const tokenExpiresAt = refreshed.tokenExpiresAt;
-        yield* database.use((db) =>
-          db
-            .update(socialAccount)
-            .set({ credentials: stored, tokenExpiresAt })
-            .where(eq(socialAccount.id, account.id))
-            .run(),
-        );
-      }
+      const credentials = yield* credentialAccess.fresh(
+        { ...account, credentials: account.credentials },
+        adapter,
+      );
 
       const body = bodyFormats(content.body);
       const files = yield* database.use((db) => ({
@@ -385,16 +375,6 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
           lastError: error.message,
           nextAttemptAt: new Date((yield* Clock.currentTimeMillis) + delay),
         });
-      }
-      if (phase === 'refresh' && !error.retryable) {
-        // The platform rejected the refresh token: the owner has to reconnect.
-        yield* database.use((db) =>
-          db
-            .update(socialAccount)
-            .set({ status: 'expired' })
-            .where(eq(socialAccount.id, target.socialAccountId))
-            .run(),
-        );
       }
       return yield* finish(target, { status: 'failed', lastError: error.message });
     }
