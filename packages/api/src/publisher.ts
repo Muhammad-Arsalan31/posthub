@@ -5,8 +5,9 @@
 //   3. The post's status is recomputed from its targets.
 // A target found in `publishing` at startup was interrupted mid-call: it may or may not have gone out,
 // so it is marked failed for the owner to check instead of being retried (posts never duplicate).
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import {
+  hostedMedia,
   mediaAsset,
   post,
   postMedia,
@@ -25,7 +26,7 @@ import {
   Vault,
   type MediaFile,
 } from '@posthub/integrations';
-import { and, asc, eq, isNull, lte, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, lte, notInArray, or, type SQL } from 'drizzle-orm';
 import {
   Cause,
   Clock,
@@ -40,6 +41,7 @@ import {
   type Scope,
 } from 'effect';
 import { inlineMediaIds, inlineRef } from './inline-media';
+import { MediaHosts } from './media-hosts';
 import { ProviderApps } from './provider-apps';
 import { Database, type DatabaseError, MediaDir } from './services';
 
@@ -82,10 +84,15 @@ export interface PublisherService {
   readonly startJobs: Effect.Effect<void, DatabaseError>;
   /** Like `startJobs`, but waits until the jobs it started have finished. */
   readonly tick: Effect.Effect<void, DatabaseError>;
+  /**
+   * Deletes media-host objects whose target is not publishing (left behind by a crash). Succeeds
+   * with how many were removed; objects that can't be removed are kept for next time.
+   */
+  readonly sweepHostedMedia: Effect.Effect<number, DatabaseError>;
 }
 
 type ClaimedTarget = typeof postTarget.$inferSelect;
-type Phase = 'prepare' | 'refresh' | 'publish';
+type Phase = 'prepare' | 'refresh' | 'upload' | 'publish';
 
 const now = Effect.map(Clock.currentTimeMillis, (ms) => new Date(ms));
 
@@ -93,6 +100,7 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
   const database = yield* Database;
   const vault = yield* Vault;
   const providerApps = yield* ProviderApps;
+  const mediaHosts = yield* MediaHosts;
   const mediaDir = yield* MediaDir;
   // Jobs run in this set; closing the publisher's scope waits for them (they are uninterruptible).
   const jobs = yield* FiberSet.make<void>();
@@ -168,9 +176,10 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
     };
   }
 
-  function loadMedia(db: Db, postId: string): MediaFile[] {
+  function loadMedia(db: Db, postId: string): Array<MediaFile & { id: string }> {
     return db
       .select({
+        id: mediaAsset.id,
         storagePath: mediaAsset.storagePath,
         fileName: mediaAsset.fileName,
         mimeType: mediaAsset.mimeType,
@@ -194,6 +203,66 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
         refreshPostStatus(db, target.postId);
       }),
     );
+
+  /**
+   * Puts each file on the owner's media host and returns them with their public URLs. Keys are
+   * deterministic, so a retry overwrites instead of piling up objects. Each key is recorded
+   * before its upload, so a crash never leaves an object nobody knows about.
+   */
+  const hostMedia = Effect.fnUntraced(function* (
+    target: ClaimedTarget,
+    userId: string,
+    media: Array<MediaFile & { id: string }>,
+  ) {
+    const host = yield* mediaHosts.forUser(userId);
+    if (Option.isNone(host)) {
+      return yield* platformError('media-host', 'Set up a media host in Settings, then retry.', {
+        retryable: false,
+      });
+    }
+    const hosted: Array<MediaFile & { id: string }> = [];
+    for (const file of media) {
+      const key = `${target.id}/${file.id}${extname(file.fileName).toLowerCase()}`;
+      yield* database.use((db) =>
+        db
+          .insert(hostedMedia)
+          .values({ key, userId, targetId: target.id })
+          .onConflictDoNothing()
+          .run(),
+      );
+      const { url } = yield* host.value.put(file, key);
+      hosted.push({ ...file, publicUrl: url });
+    }
+    return hosted;
+  });
+
+  /** Deletes hosted objects matching `where`. A failure is logged and the row kept for the next sweep. */
+  const removeHostedMedia = (where: SQL | undefined) =>
+    Effect.gen(function* () {
+      const rows = yield* database.use((db) => db.select().from(hostedMedia).where(where).all());
+      let removed = 0;
+      for (const row of rows) {
+        const host = yield* mediaHosts.forUser(row.userId);
+        if (Option.isNone(host)) {
+          yield* Effect.logWarning(
+            `[publisher] no media host to delete ${row.key} from; kept until one is set up`,
+          );
+          continue;
+        }
+        const done = yield* host.value.remove(row.key).pipe(
+          Effect.as(true),
+          Effect.catchCause((cause) =>
+            Effect.as(Effect.logWarning(`[publisher] could not delete ${row.key}`, cause), false),
+          ),
+        );
+        if (!done) continue;
+        yield* database.use((db) =>
+          db.delete(hostedMedia).where(eq(hostedMedia.key, row.key)).run(),
+        );
+        removed++;
+      }
+      return removed;
+    });
 
   const publishTarget = (target: ClaimedTarget) => {
     let phase: Phase = 'prepare';
@@ -250,7 +319,6 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
         );
       }
 
-      phase = 'publish';
       const body = bodyFormats(content.body);
       const files = yield* database.use((db) => ({
         media: loadMedia(db, content.id),
@@ -261,6 +329,13 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
           return file ? [{ ref: inlineRef(mediaId), file }] : [];
         }),
       }));
+
+      if (adapter.needsPublicMedia && files.media.length) {
+        phase = 'upload';
+        files.media = yield* hostMedia(target, content.userId, files.media);
+      }
+
+      phase = 'publish';
       const result = yield* adapter.publish(credentials, {
         title: content.title,
         text: target.captionOverride ?? body.text,
@@ -288,6 +363,8 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
 
     return attempt.pipe(
       Effect.catchCause((cause) => recordFailure(target, cause, phase, platform)),
+      // Files on the media host are public only while the target publishes.
+      Effect.ensuring(Effect.ignore(removeHostedMedia(eq(hostedMedia.targetId, target.id)))),
       // Never cut short: a half-finished upload must be recorded, not abandoned.
       Effect.uninterruptible,
     );
@@ -371,6 +448,20 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
     recover,
     startJobs: Effect.asVoid(claimJobs),
     tick: Effect.flatMap(claimJobs, (started) => Fiber.awaitAll(started)).pipe(Effect.asVoid),
+    sweepHostedMedia: Effect.flatMap(
+      database.use((db) =>
+        db
+          .select({ id: postTarget.id })
+          .from(postTarget)
+          .where(eq(postTarget.status, 'publishing'))
+          .all()
+          .map((t) => t.id),
+      ),
+      (publishing) =>
+        removeHostedMedia(
+          publishing.length ? notInArray(hostedMedia.targetId, publishing) : undefined,
+        ),
+    ),
   });
 });
 
@@ -393,6 +484,9 @@ export const publisherWorker = (interval: Duration.Input = '5 seconds') =>
       if (interrupted) {
         yield* Effect.logInfo(`[publisher] marked ${interrupted} interrupted target(s) failed`);
       }
+      yield* publisher.sweepHostedMedia.pipe(
+        Effect.catchCause((cause) => Effect.logError('[publisher] media host cleanup', cause)),
+      );
       yield* publisher.startJobs.pipe(
         Effect.catchCause((cause) => Effect.logError('[publisher]', cause)),
         Effect.repeat(Schedule.spaced(interval)),

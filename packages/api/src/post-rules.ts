@@ -17,8 +17,17 @@ interface RuleInput {
 
 const isVideo = (m: { mimeType: string }) => m.mimeType.startsWith('video/');
 
+export interface RuleOptions {
+  /** The owner has a media host, so platforms that download media from a URL can be used. */
+  hasMediaHost?: boolean;
+}
+
 /** A reason this post can't go to `platform`, or null when it can. */
-export function platformProblem(platform: Platform, post: RuleInput): string | null {
+export function platformProblem(
+  platform: Platform,
+  post: RuleInput,
+  options: RuleOptions = {},
+): string | null {
   const hasVideo = post.media.some(isVideo);
   switch (platform) {
     case 'youtube':
@@ -32,7 +41,9 @@ export function platformProblem(platform: Platform, post: RuleInput): string | n
       return null;
     case 'instagram':
       if (post.media.length !== 1) return 'Instagram needs exactly one image or video.';
-      return 'Instagram needs a public media URL, which PostHub cannot provide yet.';
+      return options.hasMediaHost
+        ? null
+        : 'Set up a media host in Settings to publish to Instagram.';
     case 'linkedin':
       return hasVideo ? 'LinkedIn video posts are not supported yet.' : null;
     case 'facebook':

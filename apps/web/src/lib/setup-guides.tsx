@@ -103,8 +103,8 @@ export const SETUP_GUIDES: Record<Provider['id'], SetupGuide> = {
       ],
       notes: [
         <>
-          Instagram downloads media from a public web address. Posts with files uploaded to PostHub
-          cannot go to Instagram until public media URLs are added.
+          Instagram downloads media from a public web address. Set up a media host on the Settings
+          page (an S3-compatible bucket such as Cloudflare R2) before posting to Instagram.
         </>,
       ],
     },

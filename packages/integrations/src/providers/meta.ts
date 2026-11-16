@@ -236,6 +236,7 @@ export function createMeta(config: MetaConfig, http: Http, options: MetaOptions 
 
   const instagram: PlatformAdapter<InstagramCredentials> = {
     platform: 'instagram',
+    needsPublicMedia: true,
 
     publish: ({ igUserId, accessToken }, input) =>
       Effect.gen(function* () {

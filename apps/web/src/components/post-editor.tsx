@@ -95,6 +95,7 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
 
   const accounts = useQuery(api.accounts.list.queryOptions());
   const mediaList = useQuery(api.media.list.queryOptions());
+  const mediaHost = useQuery(api.settings.mediaHost.queryOptions());
   const { upload, uploading } = useUploadMedia();
 
   const mediaById = useMemo(() => {
@@ -115,12 +116,16 @@ export function PostEditor(props: { post?: Post; userId: string; onDone: () => v
   const selected = (accounts.data ?? []).filter((a) => accountIds.includes(a.id));
   const problems = selected.flatMap((account) => {
     if (account.status !== 'active') return [{ account, message: 'Reconnect this account first.' }];
-    const message = platformProblem(account.platform, {
-      text: bodyText,
-      link: linkValue,
-      media,
-      thumbnail,
-    });
+    const message = platformProblem(
+      account.platform,
+      {
+        text: bodyText,
+        link: linkValue,
+        media,
+        thumbnail,
+      },
+      { hasMediaHost: Boolean(mediaHost.data) },
+    );
     return message ? [{ account, message }] : [];
   });
   const effectiveTitle = title.trim() || titleFromBody(bodyText);

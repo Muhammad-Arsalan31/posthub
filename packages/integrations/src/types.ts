@@ -62,6 +62,8 @@ export interface RefreshResult<C> {
  */
 export interface PlatformAdapter<C> {
   readonly platform: Platform;
+  /** The platform downloads media from `MediaFile.publicUrl` (the publisher puts it on the media host). */
+  readonly needsPublicMedia?: boolean;
   publish(credentials: C, input: PublishInput): Effect.Effect<PublishResult, PublishError>;
   refresh?(credentials: C): Effect.Effect<RefreshResult<C>, PublishError>;
 }

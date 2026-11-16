@@ -12,6 +12,7 @@ import {
 import {
   Account,
   EditableStatus,
+  MediaHostSettings,
   MediaItem,
   OAuthProviderId,
   Platform,
@@ -229,10 +230,49 @@ export class ProviderAppsApi extends HttpApiGroup.make('providerApps')
   .middleware(Authorization)
   .prefix('/rpc/provider-apps') {}
 
+/** The media host form. Leave the secret empty to keep the current one. */
+export const MediaHostInput = Schema.Struct({
+  endpoint: HttpUrl,
+  region: required(100),
+  bucket: required(200),
+  accessKeyId: required(500),
+  secretAccessKey: Schema.optionalKey(bounded(500)),
+  publicBaseUrl: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+});
+export type MediaHostInput = typeof MediaHostInput.Type;
+
+const Ok = Schema.Struct({ ok: Schema.Boolean });
+
+export class SettingsApi extends HttpApiGroup.make('settings')
+  .add(
+    HttpApiEndpoint.get('mediaHost', '/media-host', {
+      success: Schema.NullOr(MediaHostSettings),
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('saveMediaHost', '/media-host', {
+      payload: MediaHostInput,
+      success: MediaHostSettings,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('removeMediaHost', '/media-host/remove', {
+      success: Ok,
+      error: ApiErrors,
+    }),
+    /** Uploads a tiny file with these settings, downloads it anonymously and deletes it. */
+    HttpApiEndpoint.post('testMediaHost', '/media-host/test', {
+      payload: MediaHostInput,
+      success: Ok,
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/settings') {}
+
 export class Api extends HttpApi.make('posthub')
   .add(SystemApi)
   .add(PostsApi)
   .add(MediaApi)
   .add(AccountsApi)
   .add(ProviderAppsApi)
+  .add(SettingsApi)
   .middleware(InputValidation) {}

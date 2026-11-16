@@ -14,6 +14,7 @@ import { Route as LoginRouteImport } from './routes/login'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as AppAccountsRouteImport } from './routes/_app/accounts'
 import { Route as AppMediaRouteImport } from './routes/_app/media'
+import { Route as AppSettingsRouteImport } from './routes/_app/settings'
 import { Route as AppPostsPostIdRouteImport } from './routes/_app/posts.$postId'
 import { Route as AppPostsNewRouteImport } from './routes/_app/posts.new'
 
@@ -41,6 +42,11 @@ const AppMediaRoute = AppMediaRouteImport.update({
   path: '/media',
   getParentRoute: () => AppRoute,
 } as any)
+const AppSettingsRoute = AppSettingsRouteImport.update({
+  id: '/settings',
+  path: '/settings',
+  getParentRoute: () => AppRoute,
+} as any)
 const AppPostsPostIdRoute = AppPostsPostIdRouteImport.update({
   id: '/posts/$postId',
   path: '/posts/$postId',
@@ -57,6 +63,7 @@ export interface FileRoutesByFullPath {
   '/login': typeof LoginRoute
   '/accounts': typeof AppAccountsRoute
   '/media': typeof AppMediaRoute
+  '/settings': typeof AppSettingsRoute
   '/posts/$postId': typeof AppPostsPostIdRoute
   '/posts/new': typeof AppPostsNewRoute
 }
@@ -64,6 +71,7 @@ export interface FileRoutesByTo {
   '/login': typeof LoginRoute
   '/accounts': typeof AppAccountsRoute
   '/media': typeof AppMediaRoute
+  '/settings': typeof AppSettingsRoute
   '/': typeof AppIndexRoute
   '/posts/$postId': typeof AppPostsPostIdRoute
   '/posts/new': typeof AppPostsNewRoute
@@ -74,6 +82,7 @@ export interface FileRoutesById {
   '/login': typeof LoginRoute
   '/_app/accounts': typeof AppAccountsRoute
   '/_app/media': typeof AppMediaRoute
+  '/_app/settings': typeof AppSettingsRoute
   '/_app/': typeof AppIndexRoute
   '/_app/posts/$postId': typeof AppPostsPostIdRoute
   '/_app/posts/new': typeof AppPostsNewRoute
@@ -81,15 +90,29 @@ export interface FileRoutesById {
 export interface FileRouteTypes {
   fileRoutesByFullPath: FileRoutesByFullPath
   fullPaths:
-    '/' | '/login' | '/accounts' | '/media' | '/posts/$postId' | '/posts/new'
+    | '/'
+    | '/login'
+    | '/accounts'
+    | '/media'
+    | '/settings'
+    | '/posts/$postId'
+    | '/posts/new'
   fileRoutesByTo: FileRoutesByTo
-  to: '/login' | '/accounts' | '/media' | '/' | '/posts/$postId' | '/posts/new'
+  to:
+    | '/login'
+    | '/accounts'
+    | '/media'
+    | '/settings'
+    | '/'
+    | '/posts/$postId'
+    | '/posts/new'
   id:
     | '__root__'
     | '/_app'
     | '/login'
     | '/_app/accounts'
     | '/_app/media'
+    | '/_app/settings'
     | '/_app/'
     | '/_app/posts/$postId'
     | '/_app/posts/new'
@@ -137,6 +160,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof AppMediaRouteImport
       parentRoute: typeof AppRoute
     }
+    '/_app/settings': {
+      id: '/_app/settings'
+      path: '/settings'
+      fullPath: '/settings'
+      preLoaderRoute: typeof AppSettingsRouteImport
+      parentRoute: typeof AppRoute
+    }
     '/_app/posts/$postId': {
       id: '/_app/posts/$postId'
       path: '/posts/$postId'
@@ -157,6 +187,7 @@ declare module '@tanstack/react-router' {
 interface AppRouteChildren {
   AppAccountsRoute: typeof AppAccountsRoute
   AppMediaRoute: typeof AppMediaRoute
+  AppSettingsRoute: typeof AppSettingsRoute
   AppIndexRoute: typeof AppIndexRoute
   AppPostsPostIdRoute: typeof AppPostsPostIdRoute
   AppPostsNewRoute: typeof AppPostsNewRoute
@@ -165,6 +196,7 @@ interface AppRouteChildren {
 const AppRouteChildren: AppRouteChildren = {
   AppAccountsRoute: AppAccountsRoute,
   AppMediaRoute: AppMediaRoute,
+  AppSettingsRoute: AppSettingsRoute,
   AppIndexRoute: AppIndexRoute,
   AppPostsPostIdRoute: AppPostsPostIdRoute,
   AppPostsNewRoute: AppPostsNewRoute,

@@ -38,12 +38,15 @@ packages/api/        HttpApi handlers (routers/<area>.ts, assembled in src/route
   src/services.ts    Database, MediaDir services; layer.ts has apiLayer() (adds Vault, ProviderApps)
   src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows, as Effects)
   src/publisher.ts   Publisher service + publisherWorker layer (background publishing, run by the server)
+  src/settings.ts    per-user `app_setting` rows (JSON, vault-encrypted when secret)
+  src/media-hosts.ts MediaHosts service: the owner's media host (S3 bucket), read per use
   src/post-rules.ts  what each platform can publish; checked before a post is scheduled
   src/testing.ts     testContext(), sessionFor() for handler tests (@posthub/api/testing)
 packages/integrations/  platform connectors: no DB access, injectable fetch
   src/providers/     google (YouTube), meta (Facebook + Instagram), linkedin, wordpress
   src/registry.ts    createIntegrations(config): enabled providers + adapters, PROVIDERS metadata
   src/vault.ts       AES-256-GCM credential encryption
+  src/media-host.ts  MediaHost interface + S3-compatible implementation (SigV4 over node:crypto)
   src/testing.ts     createFakeFetch(), tempMedia() (@posthub/integrations/testing)
 packages/release/       semver helpers and the `pnpm release` CLI (src/cli.ts)
 ```
@@ -182,7 +185,11 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
   to Pages; Instagram requires Business/Creator accounts and may need publicly reachable media URLs;
   YouTube has upload quotas. **TikTok uses a manual handoff** (target status `manual`), because Direct Post
   isn't available for private tools.
-- Instagram needs a **public media URL** (`MediaFile.publicUrl`); local files alone are not enough. YouTube needs a video.
+- Instagram needs a **public media URL** (`MediaFile.publicUrl`). Adapters with `needsPublicMedia` get their files put on
+  the owner's **media host** (Settings page, `app_setting` key `mediaHost`) in the publisher's `upload` phase, under the key
+  `<targetId>/<mediaId><ext>`. Each key is recorded in `hosted_media` before the upload and the object is deleted when the
+  attempt ends (`sweepHostedMedia` at startup cleans up after a crash). Upload failures back off like platform errors:
+  nothing was posted yet. Without a media host, Instagram cannot be scheduled. YouTube needs a video.
   LinkedIn supports text, link, and single-image posts (video comes later).
 - **Post lifecycle:** the owner sets `draft` or `scheduled` ("Publish now" means scheduled at now). The publisher moves a
   due post to `publishing`, claims each `pending` target, and the post ends `published`/`failed` based on its targets.
@@ -200,7 +207,7 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
   categories per WordPress account id.
 - When changing what an adapter accepts, update `packages/api/src/post-rules.ts` and `apps/web/src/lib/platforms.ts` together.
 - Shutdown: Ctrl+C/SIGTERM interrupts the program; the publisher's scope waits for jobs in progress.
-- Planned next: public media URLs (for Instagram), LinkedIn video, then a Windows startup/Electron shell.
+- Planned next: LinkedIn video, then a Windows startup/Electron shell.
 
 ## Releases
 

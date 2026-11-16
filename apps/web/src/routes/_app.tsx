@@ -45,6 +45,7 @@ function AppLayout() {
           <NavLink component={Link} to="/" label="Posts" activeOptions={{ exact: false }} />
           <NavLink component={Link} to="/media" label="Media" />
           <NavLink component={Link} to="/accounts" label="Accounts" />
+          <NavLink component={Link} to="/settings" label="Settings" />
         </AppShell.Section>
         <AppShell.Section px="sm" py="xs">
           <Anchor href={RELEASE_NOTES_URL} target="_blank" rel="noreferrer" size="xs" c="dimmed">

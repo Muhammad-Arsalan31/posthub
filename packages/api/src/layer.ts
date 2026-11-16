@@ -1,10 +1,11 @@
 import type { Db } from '@posthub/db';
 import { Vault, type IntegrationDeps, type IntegrationsConfig } from '@posthub/integrations';
 import { Layer } from 'effect';
+import { MediaHosts } from './media-hosts';
 import { ProviderApps } from './provider-apps';
 import { Database, MediaDir } from './services';
 
-export type ApiServices = Database | Vault | MediaDir | ProviderApps;
+export type ApiServices = Database | Vault | MediaDir | ProviderApps | MediaHosts;
 
 export interface ApiLayerOptions {
   db: Db;
@@ -18,7 +19,10 @@ export interface ApiLayerOptions {
 
 /** Everything the API needs, built from server config. */
 export const apiLayer = (options: ApiLayerOptions) =>
-  ProviderApps.layer({ envConfig: options.envConfig, deps: options.integrationDeps }).pipe(
+  Layer.mergeAll(
+    ProviderApps.layer({ envConfig: options.envConfig, deps: options.integrationDeps }),
+    MediaHosts.layer(options.integrationDeps),
+  ).pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         Database.layer(options.db),

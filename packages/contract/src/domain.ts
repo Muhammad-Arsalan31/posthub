@@ -135,3 +135,13 @@ export const WordPressCategory = Schema.Struct({
   parent: Schema.Number,
 });
 export type WordPressCategory = typeof WordPressCategory.Type;
+
+/** The media host (S3-compatible bucket) as the settings page sees it. The secret never leaves the server. */
+export const MediaHostSettings = Schema.Struct({
+  endpoint: Schema.String,
+  region: Schema.String,
+  bucket: Schema.String,
+  accessKeyId: Schema.String,
+  publicBaseUrl: Schema.NullOr(Schema.String),
+});
+export type MediaHostSettings = typeof MediaHostSettings.Type;

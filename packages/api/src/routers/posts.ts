@@ -9,11 +9,12 @@ import {
 } from '@posthub/contract';
 import { mediaAsset, post, postMedia, postTarget, socialAccount, type Db } from '@posthub/db';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
-import { Clock, Effect } from 'effect';
+import { Clock, Effect, Option } from 'effect';
 import { HttpApiBuilder } from 'effect/http-api';
 import { badRequest, conflict, handlerDatabase, notFound } from '../http-support';
 import { inlineMediaIds } from '../inline-media';
-import { isManualPlatform, platformProblem } from '../post-rules';
+import { MediaHosts } from '../media-hosts';
+import { isManualPlatform, platformProblem, type RuleOptions } from '../post-rules';
 import { refreshPostStatus } from '../publisher';
 import { Database } from '../services';
 
@@ -108,7 +109,11 @@ function readSelection(db: Db, userId: string, input: PostInput): Selection {
 }
 
 /** Why this post can't be saved as asked, or null. Scheduling is checked against every platform. */
-function problemWith(input: PostInput, { accounts, media }: Selection): string | null {
+function problemWith(
+  input: PostInput,
+  { accounts, media }: Selection,
+  options: RuleOptions,
+): string | null {
   if (accounts.length !== new Set(input.accountIds).size) {
     return 'One of the selected accounts no longer exists.';
   }
@@ -128,7 +133,11 @@ function problemWith(input: PostInput, { accounts, media }: Selection): string |
   const problems = accounts.flatMap((account) => {
     if (account.status !== 'active')
       return [`${account.displayName}: reconnect this account first.`];
-    const problem = platformProblem(account.platform, { ...input, media: attached, thumbnail });
+    const problem = platformProblem(
+      account.platform,
+      { ...input, media: attached, thumbnail },
+      options,
+    );
     return problem ? [`${account.displayName}: ${problem}`] : [];
   });
   return problems.length ? problems.join('\n') : null;
@@ -214,6 +223,7 @@ const isEditable = (status: string) => (EDITABLE_STATUSES as readonly string[]).
 export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
   Effect.gen(function* () {
     const { query, transaction } = handlerDatabase(yield* Database);
+    const mediaHosts = yield* MediaHosts;
 
     const loadPost = (userId: string, id: string) =>
       Effect.flatMap(
@@ -226,7 +236,8 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
       transaction(
         Effect.gen(function* () {
           const selection = yield* query((db) => readSelection(db, userId, input));
-          const problem = problemWith(input, selection);
+          const hasMediaHost = Option.isSome(yield* Effect.orDie(mediaHosts.forUser(userId)));
+          const problem = problemWith(input, selection, { hasMediaHost });
           if (problem) return yield* badRequest(problem);
           yield* query((db) => writePost(db, userId, id, input, isNew, selection.accounts));
           return yield* loadPost(userId, id);

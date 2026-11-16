@@ -182,3 +182,38 @@ export const providerApp = sqliteTable('provider_app', {
   config: text('config').notNull(),
   updatedAt: updatedAt(),
 });
+
+/**
+ * Per-user settings that are not developer-app credentials (media host, queue slots, AI...).
+ * `value` is JSON, or vault-encrypted JSON when `secret` is set. Secrets never reach the client.
+ */
+export const appSetting = sqliteTable(
+  'app_setting',
+  {
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    key: text('key').notNull(),
+    value: text('value').notNull(),
+    secret: integer('secret', { mode: 'boolean' }).notNull().default(false),
+    updatedAt: updatedAt(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.key] })],
+);
+
+/**
+ * A file put on the media host for one target's publish. The row is written before the upload and
+ * removed after the object is deleted, so objects left behind by a crash are cleaned up at start.
+ */
+export const hostedMedia = sqliteTable(
+  'hosted_media',
+  {
+    key: text('key').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    targetId: text('target_id').notNull(),
+    createdAt: createdAt(),
+  },
+  (t) => [index('hosted_media_target_idx').on(t.targetId)],
+);

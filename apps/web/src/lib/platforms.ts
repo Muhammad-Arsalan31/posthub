@@ -36,6 +36,8 @@ export function platformProblem(
     media: Array<{ mimeType: string }>;
     thumbnail?: { mimeType: string; sizeBytes: number } | null;
   },
+  /** `hasMediaHost` comes from the settings.mediaHost query. */
+  options: { hasMediaHost?: boolean } = {},
 ): string | null {
   const hasVideo = post.media.some(isVideo);
   switch (platform) {
@@ -50,7 +52,9 @@ export function platformProblem(
       return null;
     case 'instagram':
       if (post.media.length !== 1) return 'Instagram needs exactly one image or video.';
-      return 'Instagram needs a public media URL, which PostHub cannot provide yet.';
+      return options.hasMediaHost
+        ? null
+        : 'Set up a media host in Settings to publish to Instagram.';
     case 'linkedin':
       return hasVideo ? 'LinkedIn video posts are not supported yet.' : null;
     case 'facebook':

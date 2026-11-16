@@ -43,6 +43,13 @@
       "when": 1794570286775,
       "tag": "0005_furry_celestials",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "6",
+      "when": 1794829473925,
+      "tag": "0006_smiling_galactus",
+      "breakpoints": true
     }
   ]
 }
