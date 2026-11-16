@@ -17,8 +17,10 @@ import {
   OAuthProviderId,
   Platform,
   Post,
+  PostTotals,
   Provider,
   QueueSettings,
+  TargetMetrics,
   User,
   WordPressCategory,
 } from './domain';
@@ -296,6 +298,42 @@ export class QueueApi extends HttpApiGroup.make('queue')
   .middleware(Authorization)
   .prefix('/rpc/queue') {}
 
+const ManualCount = Schema.optionalKey(
+  Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+);
+
+export class MetricsApi extends HttpApiGroup.make('metrics')
+  .add(
+    /** Numbers for each of a post's targets. */
+    HttpApiEndpoint.get('forPost', '/post', {
+      payload: { postId: Schema.String },
+      success: List(TargetMetrics),
+      error: ApiErrors,
+    }),
+    /** Latest totals for every post that has numbers. */
+    HttpApiEndpoint.get('totals', '/totals', { success: List(PostTotals), error: ApiErrors }),
+    /** Reads the post's numbers again on the next pass of the sync worker. */
+    HttpApiEndpoint.post('refresh', '/refresh', {
+      payload: Schema.Struct({ postId: Schema.String }),
+      success: Schema.Struct({ ok: Schema.Boolean }),
+      error: ApiErrors,
+    }),
+    /** Numbers typed in by the owner (TikTok and other platforms PostHub can't read). */
+    HttpApiEndpoint.post('setManual', '/manual', {
+      payload: Schema.Struct({
+        targetId: Schema.String,
+        views: ManualCount,
+        likes: ManualCount,
+        comments: ManualCount,
+        shares: ManualCount,
+      }),
+      success: TargetMetrics,
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/metrics') {}
+
 export class Api extends HttpApi.make('posthub')
   .add(SystemApi)
   .add(PostsApi)
@@ -304,4 +342,5 @@ export class Api extends HttpApi.make('posthub')
   .add(ProviderAppsApi)
   .add(SettingsApi)
   .add(QueueApi)
+  .add(MetricsApi)
   .middleware(InputValidation) {}

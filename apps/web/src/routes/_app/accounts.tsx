@@ -94,7 +94,14 @@ function AccountsPage() {
               {accounts.data.map((account) => (
                 <Table.Tr key={account.id}>
                   <Table.Td>{PLATFORM_LABELS[account.platform] ?? account.platform}</Table.Td>
-                  <Table.Td>{account.displayName}</Table.Td>
+                  <Table.Td>
+                    {account.displayName}
+                    {account.reconnectFor.includes('metrics') && account.status === 'active' && (
+                      <Text size="xs" c="dimmed">
+                        Reconnect to let PostHub read this account's numbers.
+                      </Text>
+                    )}
+                  </Table.Td>
                   <Table.Td>
                     <Badge variant="light" color={account.status === 'active' ? 'green' : 'orange'}>
                       {account.status}

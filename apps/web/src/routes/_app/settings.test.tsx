@@ -60,14 +60,18 @@ describe('settings: media host', () => {
     expect(await screen.findByText('Not set up')).toBeTruthy();
 
     const user = userEvent.setup();
-    await user.type(screen.getByLabelText('Endpoint'), saved.endpoint);
-    await user.type(screen.getByLabelText('Bucket'), 'media');
-    await user.type(screen.getByLabelText('Access key ID'), 'key-id');
+    await user.click(screen.getByLabelText('Endpoint'));
+    await user.paste(saved.endpoint);
+    await user.click(screen.getByLabelText('Bucket'));
+    await user.paste('media');
+    await user.click(screen.getByLabelText('Access key ID'));
+    await user.paste('key-id');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('Required the first time you save')).toBeTruthy();
     expect(mocks.save).not.toHaveBeenCalled();
 
-    await user.type(screen.getByLabelText('Secret access key'), 'secret');
+    await user.click(screen.getByLabelText('Secret access key'));
+    await user.paste('secret');
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(mocks.save).toHaveBeenCalled());
     expect(mocks.save.mock.calls[0]![0]).toEqual({ ...saved, secretAccessKey: 'secret' });

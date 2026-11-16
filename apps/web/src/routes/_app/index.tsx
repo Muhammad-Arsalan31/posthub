@@ -23,6 +23,7 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import dayjs from 'dayjs';
 import { useState } from 'react';
 import { postsCollection, type Post, type PostTarget } from '../../collections/posts';
+import { totalsText } from '../../components/post-metrics';
 import { bodyToText } from '../../lib/body';
 import { api, client } from '../../lib/api';
 import { PLATFORM_COLORS, PLATFORM_LABELS, type Account } from '../../lib/platforms';
@@ -57,6 +58,8 @@ function PostsPage() {
   const { session } = Route.useRouteContext();
   const [filter, setFilter] = useState<Filter>('all');
   const accounts = useQuery(api.accounts.list.queryOptions());
+  const totals = useQuery(api.metrics.totals.queryOptions({ refetchInterval: 60_000 }));
+  const totalsByPost = new Map((totals.data ?? []).map((t) => [t.postId, totalsText(t)]));
   const { data: posts, isLoading } = useLiveQuery((q) =>
     q.from({ post: postsCollection }).orderBy(({ post }) => post.updatedAt, 'desc'),
   );
@@ -149,6 +152,7 @@ function PostsPage() {
             key={post.id}
             post={post}
             accountsById={accountsById}
+            totals={totalsByPost.get(post.id)}
             onDuplicate={() => duplicate(post)}
             onDelete={() => confirmDelete(post)}
           />
@@ -161,6 +165,8 @@ function PostsPage() {
 function PostCard(props: {
   post: Post;
   accountsById: Map<string, Account>;
+  /** Latest numbers, e.g. "120 views · 7 likes". */
+  totals?: string;
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
@@ -194,15 +200,23 @@ function PostCard(props: {
                 {post.title}
               </Anchor>
             ) : (
-              <Text fw={600} truncate>
+              <Anchor
+                renderRoot={(rootProps) => (
+                  <Link {...rootProps} to="/posts/$postId" params={{ postId: post.id }} />
+                )}
+                fw={600}
+                c="inherit"
+                truncate
+              >
                 {post.title}
-              </Text>
+              </Anchor>
             )}
             {when && (
               <Text size="xs" c="dimmed">
                 {when}
                 {post.mediaIds.length > 0 &&
                   ` · ${post.mediaIds.length} file${post.mediaIds.length === 1 ? '' : 's'}`}
+                {props.totals && ` · ${props.totals}`}
               </Text>
             )}
           </Stack>

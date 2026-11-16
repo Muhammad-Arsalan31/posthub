@@ -111,6 +111,8 @@ export const Account = Schema.Struct({
   status: AccountStatus,
   tokenExpiresAt: Schema.NullOr(Schema.Date),
   createdAt: Schema.Date,
+  /** Features this account lacks permissions for: reconnecting it grants them. */
+  reconnectFor: Schema.mutable(Schema.Array(Schema.Literals(['metrics']))),
 });
 export type Account = typeof Account.Type;
 
@@ -176,3 +178,42 @@ export const QueueSettings = Schema.Struct({
   slots: Schema.mutable(Schema.Array(QueueSlot)),
 });
 export type QueueSettings = typeof QueueSettings.Type;
+
+const Count = Schema.NullOr(Schema.Number);
+
+/** A post's numbers on one platform at one moment. Null means "not available", not zero. */
+export const MetricSnapshot = Schema.Struct({
+  capturedAt: Schema.Date,
+  source: Schema.Literals(['platform', 'manual']),
+  views: Count,
+  reach: Count,
+  likes: Count,
+  comments: Count,
+  shares: Count,
+  saves: Count,
+  clicks: Count,
+  watchTimeSec: Count,
+});
+export type MetricSnapshot = typeof MetricSnapshot.Type;
+
+/** One target's numbers: the latest, the history, and when they are read next. */
+export const TargetMetrics = Schema.Struct({
+  targetId: Schema.String,
+  latest: Schema.NullOr(MetricSnapshot),
+  series: Schema.mutable(Schema.Array(MetricSnapshot)),
+  /** Whether PostHub reads this platform's numbers itself (false: enter them by hand). */
+  automatic: Schema.Boolean,
+  lastRunAt: Schema.NullOr(Schema.Date),
+  nextRunAt: Schema.NullOr(Schema.Date),
+  lastError: Schema.NullOr(Schema.String),
+});
+export type TargetMetrics = typeof TargetMetrics.Type;
+
+/** Latest numbers of a post, summed over its targets. */
+export const PostTotals = Schema.Struct({
+  postId: Schema.String,
+  views: Count,
+  likes: Count,
+  comments: Count,
+});
+export type PostTotals = typeof PostTotals.Type;
