@@ -173,6 +173,8 @@ export interface EngagementAdapter<C> {
   readonly capabilities: EngagementCapabilities;
   /** OAuth scopes the comment calls need. */
   readonly scopes: readonly string[];
+  /** Parent used when replying: some platforms flatten replies onto the top-level comment. */
+  replyParentId(ref: CommentRef): string;
   listComments(
     credentials: C,
     post: { externalPostId: string; accountExternalId: string },

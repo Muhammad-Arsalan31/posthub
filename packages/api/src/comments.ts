@@ -322,9 +322,20 @@ export function makeCommentWork({ database, providerApps, credentialAccess }: De
           const since = action.createdAt.getTime() - MINUTE;
           const already = comments.some(
             (c) =>
-              c.isOwn && c.text.trim() === action.text!.trim() && c.createdAt.getTime() >= since,
+              c.isOwn &&
+              c.parentExternalId === adapter.replyParentId(ref) &&
+              c.text.trim() === action.text!.trim() &&
+              c.createdAt.getTime() >= since,
           );
           if (already) return yield* finishAction(action, { status: 'done', lastError: null });
+          if (!full)
+            return yield* finishAction(action, {
+              status: 'failed',
+              checkFirst: true,
+              nextAttemptAt: null,
+              lastError:
+                'PostHub could not check all comments. Check the platform before retrying; the reply may already exist.',
+            });
         }
         const sent = yield* adapter.reply(credentials, ref, action.text!);
         // Posted: record it, and never fail from here on.
@@ -470,6 +481,14 @@ export function makeCommentWork({ database, providerApps, credentialAccess }: De
             firstCommentCheck: false,
           });
         }
+        if (!full)
+          return yield* setFirstComment(claimed.id, {
+            firstCommentStatus: 'failed',
+            firstCommentCheck: true,
+            firstCommentNextAt: null,
+            firstCommentError:
+              'PostHub could not check all comments. Check the platform before retrying; the comment may already exist.',
+          });
       }
       const posted = yield* ready.adapter.postComment(
         ready.credentials,

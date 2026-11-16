@@ -101,6 +101,77 @@ const calls = (fake: { calls: RecordedRequest[] }) =>
   fake.calls.map((c) => `${c.method} ${c.url.split('?')[0]}`);
 
 describe('publisher with a media host', () => {
+  it.effect('cleans the original bucket after settings change and the worker restarts', () =>
+    Effect.gen(function* () {
+      let failDelete = true;
+      const {
+        db,
+        ctx,
+        fake,
+        publisher,
+        image,
+        post: created,
+      } = yield* setup({
+        remove: () => (failDelete ? new Response('retry', { status: 500 }) : new Response(null)),
+      });
+      yield* publisher.tick;
+      expect(db.select().from(hostedMedia).all()).toHaveLength(1);
+      const savedConfig = db.select().from(hostedMedia).get()!.hostConfig;
+      expect(savedConfig).toMatch(/^v1\./);
+      expect(yield* ctx.vault.decrypt(savedConfig!)).toMatchObject({
+        bucket: 'media',
+        secretAccessKey: 'secret',
+      });
+      yield* Effect.promise(() =>
+        ctx.api.settings.saveMediaHost({
+          endpoint: 'https://new.r2.test',
+          region: 'auto',
+          bucket: 'new-media',
+          accessKeyId: 'new-key',
+          secretAccessKey: 'new-secret',
+        }),
+      );
+      failDelete = false;
+      const restarted = Services.get(
+        yield* Layer.build(
+          Publisher.layer().pipe(
+            Layer.provideMerge(
+              apiLayer({
+                db,
+                encryptionKey: TEST_ENCRYPTION_KEY,
+                mediaDir: ctx.mediaDir,
+                integrationDeps: { fetch: fake.fetch },
+              }),
+            ),
+          ),
+        ),
+        Publisher,
+      );
+      expect(yield* restarted.sweepHostedMedia).toBe(1);
+      expect(calls(fake).at(-1)).toBe(`DELETE ${BUCKET}/${created.targets[0]!.id}/${image.id}.jpg`);
+      expect(db.select().from(hostedMedia).all()).toEqual([]);
+    }),
+  );
+
+  it.effect(
+    'preserves the destination of legacy uploads when media-host settings are removed',
+    () =>
+      Effect.gen(function* () {
+        const { db, ctx, publisher, fake } = yield* setup();
+        db.insert(hostedMedia)
+          .values({
+            key: 'old-target/photo.jpg',
+            targetId: 'old-target',
+            userId: ctx.session!.user.id,
+          })
+          .run();
+        yield* Effect.promise(() => ctx.api.settings.removeMediaHost());
+        expect(yield* publisher.sweepHostedMedia).toBe(1);
+        expect(calls(fake)).toEqual([`DELETE ${BUCKET}/old-target/photo.jpg`]);
+        expect(db.select().from(hostedMedia).all()).toEqual([]);
+      }),
+  );
+
   it.effect('uploads the file, gives Instagram its URL, then deletes it', () =>
     Effect.gen(function* () {
       const { db, fake, publisher, post: created, image } = yield* setup();

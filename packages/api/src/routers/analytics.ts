@@ -138,6 +138,7 @@ export const AnalyticsHandlers = HttpApiBuilder.group(Api, 'analytics', (handler
           const to = payload.to.getTime();
           return byContentType(
             targets.filter((t) => t.publishedAt.getTime() >= from && t.publishedAt.getTime() <= to),
+            to,
           );
         }),
     });

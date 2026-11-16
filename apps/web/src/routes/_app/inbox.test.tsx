@@ -19,9 +19,13 @@ vi.mock('../../lib/auth-client', () => ({
 
 vi.mock('../../lib/api', async (importOriginal) => {
   const original = await importOriginal<typeof import('../../lib/api')>();
-  const query = (group: string, name: string, fn: () => Promise<unknown>) => ({
+  const query = (group: string, name: string, fn: (input?: unknown) => Promise<unknown>) => ({
     ...(original.api as unknown as Record<string, Record<string, object>>)[group]![name],
-    queryOptions: () => ({ queryKey: ['api', group, name], queryFn: fn }),
+    queryOptions: ({ input, ...options }: { input?: unknown } = {}) => ({
+      ...options,
+      queryKey: ['api', group, name, input],
+      queryFn: () => fn(input),
+    }),
   });
   const mutation = (group: string, name: string, fn: (input: unknown) => Promise<unknown>) => ({
     ...(original.api as unknown as Record<string, Record<string, object>>)[group]![name],
@@ -101,6 +105,7 @@ beforeEach(() => {
 describe('inbox', () => {
   it('shows a conversation, marks it read, and replies with a saved reply', async () => {
     await renderRoute('/inbox');
+    await userEvent.click(await screen.findByRole('button', { name: /Love this!/ }));
     // Once in the list, once in the open conversation.
     await waitFor(() => expect(screen.getAllByText('Love this!')).toHaveLength(2));
     await waitFor(() => expect(mocks.markRead).toHaveBeenCalled());
@@ -115,5 +120,36 @@ describe('inbox', () => {
     await user.click(screen.getByRole('button', { name: 'Reply' }));
     await waitFor(() => expect(mocks.reply).toHaveBeenCalled());
     expect(mocks.reply.mock.calls[0]![0]).toEqual({ commentId: 'c1', text: 'Thank you so much!' });
+  });
+
+  it('marks only the selected unread conversation read without advancing through the inbox', async () => {
+    let rows = ['a', 'b', 'c'].map((id) => comment(id, `Question ${id}`));
+    mocks.list.mockImplementation(async (input?: { unread?: boolean }) =>
+      rows
+        .filter((row) => !input?.unread || !row.read)
+        .map((root) => ({
+          root: { ...root },
+          replies: 0,
+          unread: root.read ? 0 : 1,
+          lastActivityAt: root.createdAt,
+        })),
+    );
+    mocks.thread.mockImplementation(async (input: { commentId: string }) =>
+      rows.filter((row) => row.id === input.commentId).map((row) => ({ ...row })),
+    );
+    mocks.markRead.mockImplementation(async (input: { commentIds: string[] }) => {
+      rows = rows.map((row) => (input.commentIds.includes(row.id) ? { ...row, read: true } : row));
+      return { ok: true };
+    });
+    await renderRoute('/inbox');
+    await screen.findByText('Question a');
+    await userEvent.click(screen.getByText('Unread', { selector: 'span' }));
+    await screen.findByText('Question b');
+    expect(mocks.markRead).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole('button', { name: /Question a/ }));
+    await waitFor(() => expect(screen.queryByRole('button', { name: /Question a/ })).toBeNull());
+    expect(rows.filter((row) => row.read).map((row) => row.id)).toEqual(['a']);
+    expect(screen.getByRole('button', { name: /Question b/ })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Question c/ })).toBeTruthy();
   });
 });

@@ -23,7 +23,7 @@ const credentials: WordPressCredentials = {
 
 type Responder = (req: RecordedRequest) => unknown;
 
-const setup = Effect.fnUntraced(function* (send?: Responder) {
+const setup = Effect.fnUntraced(function* (send?: Responder, pages = 1) {
   yield* TestClock.setTime(START);
   const db = createTestDb();
   const user = seedUser(db);
@@ -45,7 +45,7 @@ const setup = Effect.fnUntraced(function* (send?: Responder) {
     [`GET ${WP}/wp/v2/users/me`, () => ({ id: 5 })],
     [
       `GET ${WP}/wp/v2/comments`,
-      () => Response.json(site, { headers: { 'x-wp-totalpages': '1' } }),
+      () => Response.json(site, { headers: { 'x-wp-totalpages': String(pages) } }),
     ],
     [
       `POST ${WP}/wp/v2/comments`,
@@ -99,6 +99,26 @@ const target = (db: Db, id: string) =>
   db.select().from(postTarget).where(eq(postTarget.id, id)).get()!;
 
 describe('first comment', () => {
+  it.effect('does not resend an uncertain first comment after an incomplete read', () =>
+    Effect.gen(function* () {
+      const env = yield* setup(undefined, 11);
+      env.db
+        .update(postTarget)
+        .set({ firstCommentCheck: true })
+        .where(eq(postTarget.id, env.targetId))
+        .run();
+      yield* env.sync.tick;
+      expect(env.sends()).toHaveLength(0);
+      expect(target(env.db, env.targetId)).toMatchObject({
+        firstCommentStatus: 'failed',
+        firstCommentCheck: true,
+      });
+      expect(target(env.db, env.targetId).firstCommentError).toContain(
+        'could not check all comments',
+      );
+    }),
+  );
+
   it.effect('is posted once, after the post, and shows in the inbox', () =>
     Effect.gen(function* () {
       const { db, sync, targetId, sends } = yield* setup();

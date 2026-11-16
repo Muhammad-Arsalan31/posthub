@@ -65,6 +65,33 @@ function seed(db: Db, userId: string) {
 }
 
 describe('analytics', () => {
+  it('uses only snapshots up to the end of a historical content breakdown', async () => {
+    const db = createTestDb();
+    const user = seedUser(db);
+    const { postId } = seed(db, user.id);
+    const target = db
+      .select()
+      .from(postTarget)
+      .all()
+      .find((t) => t.postId === postId)!;
+    db.insert(postMetricSnapshot)
+      .values({
+        id: crypto.randomUUID(),
+        postTargetId: target.id,
+        capturedAt: new Date('2030-02-01T00:00:00Z'),
+        likes: 100,
+        views: 1000,
+      })
+      .run();
+    const ctx = testContext(db, sessionFor(user));
+    expect(
+      await ctx.api.analytics.byContentType({
+        from: new Date('2030-01-01T00:00:00Z'),
+        to: range.to,
+      }),
+    ).toEqual([{ contentType: 'text', posts: 1, averageEngagement: 6, averageRate: 6 / 400 }]);
+  });
+
   it('summarises the period against the previous one, with follower growth', async () => {
     const db = createTestDb();
     const ctx = testContext(db, sessionFor(seedUser(db)));

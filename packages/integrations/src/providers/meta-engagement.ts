@@ -87,6 +87,7 @@ export function createMetaEngagement(graph: string, http: Http) {
     platform: 'facebook',
     capabilities: { reply: true, like: true, hide: true, delete: true },
     scopes: FACEBOOK_COMMENT_SCOPES,
+    replyParentId: (ref) => ref.externalId,
 
     listComments: ({ pageId, pageAccessToken }, { externalPostId }, cursor) =>
       Effect.map(
@@ -195,6 +196,7 @@ export function createMetaEngagement(graph: string, http: Http) {
     platform: 'instagram',
     capabilities: { reply: true, like: false, hide: true, delete: true },
     scopes: INSTAGRAM_COMMENT_SCOPES,
+    replyParentId: (ref) => ref.threadExternalId,
 
     listComments: ({ igUserId, accessToken }, { externalPostId }, cursor) =>
       Effect.map(

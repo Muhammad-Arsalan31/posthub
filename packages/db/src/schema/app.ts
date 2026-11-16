@@ -240,6 +240,8 @@ export const hostedMedia = sqliteTable(
       .notNull()
       .references(() => user.id, { onDelete: 'cascade' }),
     targetId: text('target_id').notNull(),
+    /** Vault-encrypted upload destination and credentials; null for uploads made before snapshots. */
+    hostConfig: text('host_config'),
     createdAt: createdAt(),
   },
   (t) => [index('hosted_media_target_idx').on(t.targetId)],

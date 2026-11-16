@@ -18,6 +18,56 @@ const build = (routes: Parameters<typeof createFakeFetch>[0]) => {
 const ref = { externalId: 'c2', threadExternalId: 'c1', postExternalId: '7' };
 
 describe('engagement', () => {
+  it.effect('YouTube fetches every page of replies when the embedded replies are incomplete', () =>
+    Effect.gen(function* () {
+      const resource = (id: string, parentId?: string) => ({
+        id,
+        snippet: {
+          textOriginal: id,
+          parentId,
+          authorChannelId: { value: 'me' },
+          publishedAt: '2030-01-01T10:00:00Z',
+        },
+      });
+      const { fake, integrations } = build([
+        [
+          `GET ${YT}/commentThreads`,
+          () => ({
+            items: [
+              {
+                snippet: { topLevelComment: resource('root'), totalReplyCount: 3 },
+                replies: { comments: [resource('r1', 'root')] },
+              },
+            ],
+            nextPageToken: 'threads2',
+          }),
+        ],
+        [
+          `GET ${YT}/comments`,
+          (req) =>
+            new URL(req.url).searchParams.get('pageToken') === 'replies2'
+              ? { items: [resource('r3', 'root')] }
+              : {
+                  items: [resource('r1', 'root'), resource('r2', 'root')],
+                  nextPageToken: 'replies2',
+                },
+        ],
+      ]);
+      const result = yield* integrations
+        .engagement('youtube')!
+        .listComments(
+          { accessToken: 't', refreshToken: 'r', expiresAt: 0 },
+          { externalPostId: 'vid', accountExternalId: 'me' },
+        );
+      expect(result.comments.map((c) => c.externalId)).toEqual(['root', 'r1', 'r2', 'r3']);
+      expect(result.next).toBe('threads2');
+      expect(fake.calls.slice(1).map((c) => new URL(c.url).searchParams.get('parentId'))).toEqual([
+        'root',
+        'root',
+      ]);
+    }),
+  );
+
   it('has no comment support for LinkedIn and TikTok', () => {
     const { integrations } = build([]);
     expect(integrations.engagement('linkedin')).toBeUndefined();
@@ -29,6 +79,39 @@ describe('engagement', () => {
       delete: true,
     });
   });
+
+  it.effect('YouTube does not report a complete read when a reply page fails', () =>
+    Effect.gen(function* () {
+      const { integrations } = build([
+        [
+          `GET ${YT}/commentThreads`,
+          () => ({
+            items: [
+              {
+                snippet: {
+                  topLevelComment: { id: 'root', snippet: { publishedAt: '2030-01-01T10:00:00Z' } },
+                  totalReplyCount: 1,
+                },
+              },
+            ],
+          }),
+        ],
+        [
+          `GET ${YT}/comments`,
+          () => Response.json({ error: { message: 'Try later' } }, { status: 503 }),
+        ],
+      ]);
+      const error = yield* Effect.flip(
+        integrations
+          .engagement('youtube')!
+          .listComments(
+            { accessToken: 't', refreshToken: 'r', expiresAt: 0 },
+            { externalPostId: 'vid', accountExternalId: 'me' },
+          ),
+      );
+      expect(error).toMatchObject({ _tag: 'PlatformError', retryable: true });
+    }),
+  );
 
   it.effect('YouTube: lists threads with replies, replies on the thread, hides', () =>
     Effect.gen(function* () {

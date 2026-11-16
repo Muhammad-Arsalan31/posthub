@@ -28,7 +28,7 @@ interface CommentResource {
 
 interface ThreadList {
   items?: Array<{
-    snippet: { topLevelComment: CommentResource };
+    snippet: { topLevelComment: CommentResource; totalReplyCount?: number };
     replies?: { comments?: CommentResource[] };
   }>;
   nextPageToken?: string;
@@ -59,6 +59,7 @@ export function createYouTubeEngagement(
     capabilities: { reply: true, like: false, hide: true, delete: true },
     scopes: [YOUTUBE_COMMENT_SCOPE],
     refresh,
+    replyParentId: (ref) => ref.threadExternalId,
 
     listComments: (credentials, { externalPostId, accountExternalId }, cursor) =>
       Effect.gen(function* () {
@@ -73,11 +74,33 @@ export function createYouTubeEngagement(
           'youtube',
           get(`${API}/commentThreads?${params.toString()}`, auth(credentials)),
         );
-        const comments = (data.items ?? []).flatMap((thread) => [
-          toComment(thread.snippet.topLevelComment, accountExternalId),
-          // Threads include up to five replies; enough for an inbox.
-          ...(thread.replies?.comments ?? []).map((r) => toComment(r, accountExternalId)),
-        ]);
+        const comments: RemoteComment[] = [];
+        for (const thread of data.items ?? []) {
+          const top = thread.snippet.topLevelComment;
+          comments.push(toComment(top, accountExternalId));
+          const preview = thread.replies?.comments ?? [];
+          if ((thread.snippet.totalReplyCount ?? preview.length) <= preview.length) {
+            comments.push(...preview.map((r) => toComment(r, accountExternalId)));
+            continue;
+          }
+          // commentThreads only embeds a preview. Read every reply before reporting a full page.
+          let pageToken: string | undefined;
+          do {
+            const params = new URLSearchParams({
+              part: 'snippet',
+              parentId: top.id,
+              maxResults: '100',
+              textFormat: 'plainText',
+              ...(pageToken ? { pageToken } : {}),
+            });
+            const { data: replies } = yield* http<{
+              items?: CommentResource[];
+              nextPageToken?: string;
+            }>('youtube', get(`${API}/comments?${params.toString()}`, auth(credentials)));
+            comments.push(...(replies.items ?? []).map((r) => toComment(r, accountExternalId)));
+            pageToken = replies.nextPageToken;
+          } while (pageToken);
+        }
         return { comments, next: data.nextPageToken };
       }),
 

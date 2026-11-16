@@ -1,0 +1,1 @@
+ALTER TABLE `hosted_media` ADD `host_config` text;

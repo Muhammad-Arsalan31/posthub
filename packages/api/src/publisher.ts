@@ -230,7 +230,23 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
     userId: string,
     media: Array<MediaFile & { id: string }>,
   ) {
-    const host = yield* mediaHosts.forUser(userId);
+    // A retry must finish cleaning an earlier destination before reusing the same object keys.
+    yield* removeHostedMedia(eq(hostedMedia.targetId, target.id));
+    const leftover = yield* database.use((db) =>
+      db
+        .select({ key: hostedMedia.key })
+        .from(hostedMedia)
+        .where(eq(hostedMedia.targetId, target.id))
+        .limit(1)
+        .get(),
+    );
+    if (leftover)
+      return yield* platformError(
+        'media-host',
+        'Could not clean up the previous media upload. Try again after checking the original media host.',
+        { retryable: true },
+      );
+    const host = yield* mediaHosts.capture(userId);
     if (Option.isNone(host)) {
       return yield* platformError('media-host', 'Set up a media host in Settings, then retry.', {
         retryable: false,
@@ -242,11 +258,11 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
       yield* database.use((db) =>
         db
           .insert(hostedMedia)
-          .values({ key, userId, targetId: target.id })
+          .values({ key, userId, targetId: target.id, hostConfig: host.value.encryptedConfig })
           .onConflictDoNothing()
           .run(),
       );
-      const { url } = yield* host.value.put(file, key);
+      const { url } = yield* host.value.host.put(file, key);
       hosted.push({ ...file, publicUrl: url });
     }
     return hosted;
@@ -258,15 +274,19 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
       const rows = yield* database.use((db) => db.select().from(hostedMedia).where(where).all());
       let removed = 0;
       for (const row of rows) {
-        const host = yield* mediaHosts.forUser(row.userId);
-        if (Option.isNone(host)) {
-          yield* Effect.logWarning(
-            `[publisher] no media host to delete ${row.key} from; kept until one is set up`,
-          );
-          continue;
-        }
-        const done = yield* host.value.remove(row.key).pipe(
-          Effect.as(true),
+        const done = yield* Effect.gen(function* () {
+          const host = row.hostConfig
+            ? Option.some(yield* mediaHosts.restore(row.hostConfig))
+            : yield* mediaHosts.forUser(row.userId);
+          if (Option.isNone(host)) {
+            yield* Effect.logWarning(
+              `[publisher] no media host to delete ${row.key} from; kept until one is set up`,
+            );
+            return false;
+          }
+          yield* host.value.remove(row.key);
+          return true;
+        }).pipe(
           Effect.catchCause((cause) =>
             Effect.as(Effect.logWarning(`[publisher] could not delete ${row.key}`, cause), false),
           ),

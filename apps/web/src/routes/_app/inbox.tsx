@@ -78,7 +78,7 @@ function InboxPage() {
     }),
   );
   const supported = (accounts.data ?? []).filter((a) => a.engagement);
-  const current = threads.data?.find((t) => t.root.id === selected) ?? threads.data?.[0] ?? null;
+  const current = threads.data?.find((t) => t.root.id === selected) ?? null;
 
   return (
     <Stack maw={1200}>
@@ -104,7 +104,10 @@ function InboxPage() {
         <SegmentedControl
           size="xs"
           value={view}
-          onChange={(value) => setView(value as View)}
+          onChange={(value) => {
+            setSelected(null);
+            setView(value as View);
+          }}
           data={[
             { value: 'open', label: 'All' },
             { value: 'unread', label: 'Unread' },
@@ -155,12 +158,16 @@ function InboxPage() {
               ))}
             </ScrollArea>
           </Card>
-          {current && (
+          {current ? (
             <Conversation
               key={current.root.id}
               rootId={current.root.id}
               account={accounts.data?.find((a) => a.id === current.root.accountId)}
             />
+          ) : (
+            <Card withBorder style={{ flex: 1 }}>
+              <Text c="dimmed">Select a conversation to read and reply.</Text>
+            </Card>
           )}
         </Group>
       )}

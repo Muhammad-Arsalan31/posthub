@@ -232,7 +232,7 @@ export function bestTimes(targets: TargetRow[], timeZone: string) {
 }
 
 /** Average engagement and engagement rate per kind of post (by its latest numbers). */
-export function byContentType(targets: TargetRow[]) {
+export function byContentType(targets: TargetRow[], to = Infinity) {
   const groups = new Map<
     ContentType,
     { posts: Set<string>; engagement: number[]; rates: number[] }
@@ -240,7 +240,7 @@ export function byContentType(targets: TargetRow[]) {
   for (const target of targets) {
     const group = groups.get(target.contentType) ?? { posts: new Set(), engagement: [], rates: [] };
     group.posts.add(target.postId);
-    const latest = latestAt(target);
+    const latest = latestAt(target, to);
     const engagement = latest ? metricOf(latest, 'engagement') : null;
     const rate = latest ? engagementRate(latest) : null;
     if (engagement !== null) group.engagement.push(engagement);

@@ -53,6 +53,7 @@ export function createWordPressEngagement(http: Http): EngagementAdapter<WordPre
     platform: 'wordpress',
     capabilities: { reply: true, like: false, hide: true, delete: true },
     scopes: [],
+    replyParentId: (ref) => ref.externalId,
 
     listComments: (credentials, { externalPostId }, cursor) =>
       Effect.gen(function* () {

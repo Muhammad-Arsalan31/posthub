@@ -51,7 +51,7 @@ const wp = (id: number, text: string, extra: Partial<WpComment> = {}): WpComment
 
 type Responder = (req: RecordedRequest) => unknown;
 
-const setup = Effect.fnUntraced(function* (options: { reply?: Responder } = {}) {
+const setup = Effect.fnUntraced(function* (options: { reply?: Responder; pages?: number } = {}) {
   yield* TestClock.setTime(START);
   const db = createTestDb();
   const user = seedUser(db);
@@ -63,7 +63,15 @@ const setup = Effect.fnUntraced(function* (options: { reply?: Responder } = {}) 
     [`GET ${WP}/wp/v2/users/me`, () => ({ id: 5 })],
     [
       `GET ${WP}/wp/v2/comments`,
-      () => Response.json(site.comments, { headers: { 'x-wp-totalpages': '1' } }),
+      (req) => {
+        const page = Number(new URL(req.url).searchParams.get('page') ?? 1);
+        return Response.json(
+          options.pages ? site.comments.slice((page - 1) * 100, page * 100) : site.comments,
+          {
+            headers: { 'x-wp-totalpages': String(options.pages ?? 1) },
+          },
+        );
+      },
     ],
     [`POST ${WP}/wp/v2/comments/`, () => ({ id: 1 })],
     [
@@ -210,6 +218,46 @@ describe('comment counts', () => {
 });
 
 describe('outbox', () => {
+  it.effect('does not mistake an identical reply in another conversation for this reply', () =>
+    Effect.gen(function* () {
+      const env = yield* setup();
+      env.site.comments.push(
+        wp(3, 'Another question'),
+        wp(4, 'Repeated reply', { parent: 3, author: 5 }),
+      );
+      yield* env.sync.tick;
+      const reply = env.act('1', 'reply', 'Repeated reply');
+      env.db
+        .update(commentAction)
+        .set({ checkFirst: true })
+        .where(eq(commentAction.id, reply.id))
+        .run();
+      yield* env.sync.tick;
+      expect(env.action(reply.id).status).toBe('done');
+      expect(env.replies()).toHaveLength(1);
+      expect(JSON.parse(env.replies()[0]!.body as string)).toMatchObject({ parent: 1 });
+    }),
+  );
+
+  it.effect('does not resend an uncertain reply when the recovery read is incomplete', () =>
+    Effect.gen(function* () {
+      const env = yield* setup({ pages: 11 });
+      env.site.comments = Array.from({ length: 1000 }, (_, i) => wp(i + 1, `Comment ${i}`));
+      env.site.comments.push(wp(1001, 'Already sent', { parent: 1, author: 5 }));
+      yield* env.sync.tick;
+      const reply = env.act('1', 'reply', 'Already sent');
+      env.db
+        .update(commentAction)
+        .set({ checkFirst: true })
+        .where(eq(commentAction.id, reply.id))
+        .run();
+      yield* env.sync.tick;
+      expect(env.replies()).toHaveLength(0);
+      expect(env.action(reply.id)).toMatchObject({ status: 'failed', checkFirst: true });
+      expect(env.action(reply.id).lastError).toContain('could not check all comments');
+    }),
+  );
+
   it.effect('sends a reply once and records it', () =>
     Effect.gen(function* () {
       const { sync, comments, act, action, replies } = yield* setup();
