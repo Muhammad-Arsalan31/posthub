@@ -49,8 +49,8 @@ import { RETRY_DELAYS_MS } from './retry';
 
 export { RETRY_DELAYS_MS };
 
-/** First metrics read after publishing: soon enough to show early numbers. */
-const FIRST_METRICS_DELAY_MS = 15 * 60_000;
+/** First reads after publishing: numbers need a while to mean anything; comments can come at once. */
+const FIRST_READ_DELAY_MS = { post_metrics: 15 * 60_000, comments: 2 * 60_000 } as const;
 
 export const INTERRUPTED_MESSAGE =
   'PostHub stopped while this was publishing. Check the platform to see whether it went out, then retry if it did not.';
@@ -213,7 +213,7 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
               kind,
               subjectId: target.id,
               socialAccountId: target.socialAccountId,
-              nextRunAt: new Date(changes.publishedAt.getTime() + FIRST_METRICS_DELAY_MS),
+              nextRunAt: new Date(changes.publishedAt.getTime() + FIRST_READ_DELAY_MS[kind]),
             });
           }
         }

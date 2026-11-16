@@ -7,6 +7,7 @@ import {
   postTarget,
   savedReply,
   socialAccount,
+  syncJob,
   type CommentActionKind,
   type Db,
 } from '@posthub/db';
@@ -213,6 +214,33 @@ export const InboxHandlers = HttpApiBuilder.group(Api, 'inbox', (handlers) =>
               ?.members;
           });
           return result ?? (yield* notFound());
+        }),
+
+      checkNow: () =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser;
+          const now = new Date(yield* Clock.currentTimeMillis);
+          yield* query((db) => {
+            const accounts = db
+              .select({ id: socialAccount.id })
+              .from(socialAccount)
+              .where(eq(socialAccount.userId, user.id))
+              .all()
+              .map((a) => a.id);
+            if (!accounts.length) return;
+            db.update(syncJob)
+              // Finished jobs (old posts) run once more; paused ones wait for a reconnect.
+              .set({ status: 'pending', nextRunAt: now })
+              .where(
+                and(
+                  eq(syncJob.kind, 'comments'),
+                  inArray(syncJob.socialAccountId, accounts),
+                  inArray(syncJob.status, ['pending', 'done']),
+                ),
+              )
+              .run();
+          });
+          return { ok: true };
         }),
 
       unreadCount: () =>

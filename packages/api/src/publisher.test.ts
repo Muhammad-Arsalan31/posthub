@@ -118,14 +118,11 @@ describe('publisher', () => {
         lockedAt: null,
       });
       expect(state(db, later.id).post.status).toBe('scheduled');
-      // Its numbers and comments are read 15 minutes after publishing.
-      const job = {
-        subjectId: state(db, due.id).target.id,
-        nextRunAt: new Date('2030-01-01T09:15:00Z'),
-      };
+      // Its comments are read 2 minutes after publishing, its numbers after 15.
+      const subjectId = state(db, due.id).target.id;
       expect(db.select().from(syncJob).all()).toMatchObject([
-        { kind: 'post_metrics', ...job },
-        { kind: 'comments', ...job },
+        { kind: 'post_metrics', subjectId, nextRunAt: new Date('2030-01-01T09:15:00Z') },
+        { kind: 'comments', subjectId, nextRunAt: new Date('2030-01-01T09:02:00Z') },
       ]);
       expect(fake.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
         `POST ${API}/wp/v2/media`,

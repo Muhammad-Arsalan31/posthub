@@ -4,12 +4,14 @@ import {
   post,
   postTarget,
   socialAccount,
+  syncJob,
   type Db,
   type Platform,
 } from '@posthub/db';
 import { createTestDb, seedUser } from '@posthub/db/testing';
 import { describe, expect, it } from 'vite-plus/test';
 import { upsertComments } from '../comments';
+import { insertSyncJob } from '../sync';
 import { sessionFor, testContext } from '../testing';
 
 const remote = (externalId: string, parent: string | null, extra = {}) => ({
@@ -187,5 +189,44 @@ describe('saved replies', () => {
 
     await ctx.api.savedReplies.delete({ id: saved.id });
     expect(await ctx.api.savedReplies.list()).toEqual([]);
+  });
+});
+
+describe('check now', () => {
+  it("makes the owner's comment jobs due, leaving paused ones and other users' alone", async () => {
+    const { db, ctx, userId } = setup();
+    seed(db, userId);
+    const own = db.select().from(postTarget).get()!;
+    insertSyncJob(db, {
+      kind: 'comments',
+      subjectId: own.id,
+      socialAccountId: own.socialAccountId,
+      nextRunAt: new Date('2099-01-01'),
+    });
+    const other = testContext(db, sessionFor(seedUser(db)));
+    const otherUser = other.session!.user.id;
+    seed(db, otherUser);
+    const theirs = db
+      .select()
+      .from(postTarget)
+      .all()
+      .find((t) => t.id !== own.id)!;
+    insertSyncJob(db, {
+      kind: 'comments',
+      subjectId: theirs.id,
+      socialAccountId: theirs.socialAccountId,
+      nextRunAt: new Date('2099-01-01'),
+    });
+
+    await ctx.api.inbox.checkNow();
+    const due = (id: string) =>
+      db
+        .select()
+        .from(syncJob)
+        .all()
+        .find((j) => j.subjectId === id)!
+        .nextRunAt!.getTime() <= Date.now();
+    expect(due(own.id)).toBe(true);
+    expect(due(theirs.id)).toBe(false);
   });
 });

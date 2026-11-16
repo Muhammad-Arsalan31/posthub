@@ -61,6 +61,22 @@ function InboxPage() {
     ...(view === 'archived' ? { archived: true } : {}),
   };
   const threads = useQuery(api.inbox.list.queryOptions({ input, refetchInterval: 30_000 }));
+  const queryClient = useQueryClient();
+  const checkNow = useMutation(
+    api.inbox.checkNow.mutationOptions({
+      onSuccess: () => {
+        notifications.show({
+          message: 'Checking your posts for new comments. This takes up to a minute.',
+        });
+        // The worker runs every 30 seconds; look again shortly.
+        setTimeout(
+          () => void queryClient.invalidateQueries({ queryKey: ['api', 'inbox'] }),
+          35_000,
+        );
+      },
+      onError: (error) => notifications.show({ color: 'red', message: error.message }),
+    }),
+  );
   const supported = (accounts.data ?? []).filter((a) => a.engagement);
   const current = threads.data?.find((t) => t.root.id === selected) ?? threads.data?.[0] ?? null;
 
@@ -68,11 +84,21 @@ function InboxPage() {
     <Stack maw={1200}>
       <Group justify="space-between">
         <Title order={2}>Inbox</Title>
-        {postId && (
-          <Button component={Link} to="/inbox" variant="subtle" size="xs">
-            Showing one post · show all
+        <Group gap="xs">
+          {postId && (
+            <Button component={Link} to="/inbox" variant="subtle" size="xs">
+              Showing one post · show all
+            </Button>
+          )}
+          <Button
+            variant="default"
+            size="xs"
+            loading={checkNow.isPending}
+            onClick={() => checkNow.mutate(undefined)}
+          >
+            Check for new comments
           </Button>
-        )}
+        </Group>
       </Group>
       <Group gap="xs" align="flex-end">
         <SegmentedControl

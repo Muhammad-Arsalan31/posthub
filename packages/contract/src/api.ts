@@ -424,6 +424,8 @@ export class InboxApi extends HttpApiGroup.make('inbox')
       success: List(InboxComment),
       error: ApiErrors,
     }),
+    /** Reads every published post's comments on the sync worker's next pass (within a minute). */
+    HttpApiEndpoint.post('checkNow', '/check', { success: Ok, error: ApiErrors }),
     HttpApiEndpoint.get('unreadCount', '/unread', {
       success: Schema.Struct({ count: Schema.Number }),
       error: ApiErrors,
