@@ -1,6 +1,7 @@
 // YouTube via Google OAuth 2.0 + YouTube Data API v3 (resumable uploads).
 import { Cause, Clock, Effect } from 'effect';
 import { platformError, reason, PlatformError } from '../errors';
+import { createYouTubeEngagement, YOUTUBE_COMMENT_SCOPE } from './youtube-engagement';
 import { bearer, fileBody, form, get, json, post, put, type Http } from '../http';
 import {
   isVideo,
@@ -34,6 +35,8 @@ const THUMBNAIL_URL = 'https://www.googleapis.com/upload/youtube/v3/thumbnails/s
 const SCOPES = [
   'https://www.googleapis.com/auth/youtube.upload',
   'https://www.googleapis.com/auth/youtube.readonly',
+  // Reply to and moderate comments.
+  YOUTUBE_COMMENT_SCOPE,
 ];
 
 interface TokenResponse {
@@ -259,5 +262,12 @@ export function createGoogle(config: GoogleConfig, http: Http) {
       }),
   };
 
-  return { provider, adapters: { youtube }, insights: { youtube: youtubeInsights } };
+  return {
+    provider,
+    adapters: { youtube },
+    insights: { youtube: youtubeInsights },
+    engagement: {
+      youtube: createYouTubeEngagement(http, (credentials) => youtube.refresh!(credentials)),
+    },
+  };
 }

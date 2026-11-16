@@ -3,7 +3,9 @@ import { createGoogle, type GoogleConfig } from './providers/google';
 import { createLinkedIn, type LinkedInConfig } from './providers/linkedin';
 import { createMeta, type MetaConfig } from './providers/meta';
 import { createWordPress } from './providers/wordpress';
+import { createWordPressEngagement } from './providers/wordpress-engagement';
 import type {
+  EngagementAdapter,
   InsightsAdapter,
   OAuthProvider,
   OAuthProviderId,
@@ -76,12 +78,14 @@ export function createIntegrations(config: IntegrationsConfig, deps: Integration
   const providers = new Map<OAuthProviderId, OAuthProvider>();
   const adapters = new Map<Platform, PlatformAdapter<unknown>>();
   const insights = new Map<Platform, InsightsAdapter<unknown>>();
+  const engagement = new Map<Platform, EngagementAdapter<unknown>>();
 
   if (config.google) {
     const google = createGoogle(config.google, http);
     providers.set('google', google.provider);
     adapters.set('youtube', google.adapters.youtube);
     insights.set('youtube', google.insights.youtube);
+    engagement.set('youtube', google.engagement.youtube);
   }
   if (config.meta) {
     const meta = createMeta(config.meta, http, { pollIntervalMs: deps.pollIntervalMs });
@@ -90,6 +94,8 @@ export function createIntegrations(config: IntegrationsConfig, deps: Integration
     adapters.set('instagram', meta.adapters.instagram);
     insights.set('facebook', meta.insights.facebook);
     insights.set('instagram', meta.insights.instagram);
+    engagement.set('facebook', meta.engagement.facebook);
+    engagement.set('instagram', meta.engagement.instagram);
   }
   if (config.linkedin) {
     const linkedin = createLinkedIn(config.linkedin, http);
@@ -99,12 +105,15 @@ export function createIntegrations(config: IntegrationsConfig, deps: Integration
   const wordpress = createWordPress(http);
   adapters.set('wordpress', wordpress.adapter);
   insights.set('wordpress', wordpress.insights);
+  engagement.set('wordpress', createWordPressEngagement(http));
 
   return {
     oauth: (id: string) => providers.get(id as OAuthProviderId),
     adapter: (platform: Platform) => adapters.get(platform),
     /** Reads post and account numbers; undefined when the platform has no support (LinkedIn, TikTok). */
     insights: (platform: Platform) => insights.get(platform),
+    /** Reads and answers comments; undefined for LinkedIn (needs approval) and TikTok. */
+    engagement: (platform: Platform) => engagement.get(platform),
     wordpress: { connect: wordpress.connect, categories: wordpress.categories },
     status: () =>
       PROVIDERS.map((p) => ({

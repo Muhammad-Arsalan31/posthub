@@ -127,3 +127,67 @@ export const numbers = (values: Record<string, unknown>): Record<string, number>
       return typeof n === 'number' && Number.isFinite(n) ? [[key, n]] : [];
     }),
   );
+
+/** A comment as a platform returns it. */
+export interface RemoteComment {
+  externalId: string;
+  /** The comment this one replies to, if any. */
+  parentExternalId: string | null;
+  authorName: string;
+  authorAvatarUrl: string | null;
+  authorId: string | null;
+  text: string;
+  likeCount: number | null;
+  /** The owner has liked it (where the platform says). */
+  likedByMe: boolean;
+  createdAt: Date;
+  /** Written by the connected account itself. */
+  isOwn: boolean;
+  hidden: boolean;
+}
+
+/** Where a comment lives: what reply and moderation calls need. */
+export interface CommentRef {
+  externalId: string;
+  /** The top-level comment of its thread (YouTube replies attach there). */
+  threadExternalId: string;
+  /** The post (video, page post, media, blog post) it is on. */
+  postExternalId: string;
+}
+
+export interface EngagementCapabilities {
+  reply: boolean;
+  like: boolean;
+  hide: boolean;
+  delete: boolean;
+}
+
+export type ModerationAction = 'hide' | 'unhide' | 'delete';
+
+/**
+ * Reads and answers comments. `reply` creates something: once the creating request succeeds,
+ * the effect must not fail (a retry would reply twice).
+ */
+export interface EngagementAdapter<C> {
+  readonly platform: Platform;
+  readonly capabilities: EngagementCapabilities;
+  /** OAuth scopes the comment calls need. */
+  readonly scopes: readonly string[];
+  listComments(
+    credentials: C,
+    post: { externalPostId: string; accountExternalId: string },
+    cursor?: string,
+  ): Effect.Effect<{ comments: RemoteComment[]; next?: string }, PublishError>;
+  reply(credentials: C, ref: CommentRef, text: string): Effect.Effect<RemoteComment, PublishError>;
+  setLike(credentials: C, ref: CommentRef, liked: boolean): Effect.Effect<void, PublishError>;
+  moderate(
+    credentials: C,
+    ref: CommentRef,
+    action: ModerationAction,
+  ): Effect.Effect<void, PublishError>;
+  refresh?(credentials: C): Effect.Effect<RefreshResult<C>, PublishError>;
+}
+
+/** For capabilities a platform lacks: a clear, permanent "no". */
+export const unsupported = (platform: Platform, what: string) =>
+  `${what} is not possible on ${platform} through its API.`;

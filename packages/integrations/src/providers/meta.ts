@@ -2,6 +2,11 @@
 import { Effect } from 'effect';
 import type { HttpBody } from 'effect/http';
 import { platformError } from '../errors';
+import {
+  createMetaEngagement,
+  FACEBOOK_COMMENT_SCOPES,
+  INSTAGRAM_COMMENT_SCOPES,
+} from './meta-engagement';
 import { fileBlob, form, get, multipart, post, type Http } from '../http';
 import {
   isImage,
@@ -52,6 +57,9 @@ const SCOPES = [
   // Post and account numbers.
   'read_insights',
   'instagram_manage_insights',
+  // Comments.
+  ...FACEBOOK_COMMENT_SCOPES,
+  ...INSTAGRAM_COMMENT_SCOPES,
 ];
 
 interface PageResponse {
@@ -422,5 +430,6 @@ export function createMeta(config: MetaConfig, http: Http, options: MetaOptions 
     provider,
     adapters: { facebook, instagram },
     insights: { facebook: facebookInsights, instagram: instagramInsights },
+    engagement: createMetaEngagement(graph, http),
   };
 }

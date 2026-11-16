@@ -86,6 +86,7 @@ function errorMessage(body: unknown): string | undefined {
 export const get = HttpClientRequest.get;
 export const post = HttpClientRequest.post;
 export const put = HttpClientRequest.put;
+export const del = HttpClientRequest.delete;
 
 /** URL-encoded form body, skipping undefined values. */
 export function form(fields: Record<string, string | undefined>) {
