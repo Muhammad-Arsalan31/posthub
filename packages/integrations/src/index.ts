@@ -27,3 +27,9 @@ export type {
   WordPressCredentials,
   WordPressConnectInput,
 } from './providers/wordpress';
+export {
+  createS3MediaHost,
+  type MediaHost,
+  type MediaHostDeps,
+  type S3MediaHostConfig,
+} from './media-host';

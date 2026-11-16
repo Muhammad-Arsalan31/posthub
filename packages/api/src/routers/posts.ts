@@ -9,12 +9,19 @@ import {
 } from '@posthub/contract';
 import { mediaAsset, post, postMedia, postTarget, socialAccount, type Db } from '@posthub/db';
 import { and, asc, desc, eq, inArray } from 'drizzle-orm';
-import { Clock, Effect } from 'effect';
+import { Clock, Effect, Option } from 'effect';
 import { HttpApiBuilder } from 'effect/http-api';
 import { badRequest, conflict, handlerDatabase, notFound } from '../http-support';
 import { inlineMediaIds } from '../inline-media';
-import { isManualPlatform, platformProblem } from '../post-rules';
+import { MediaHosts } from '../media-hosts';
+import {
+  firstCommentProblem,
+  isManualPlatform,
+  platformProblem,
+  type RuleOptions,
+} from '../post-rules';
 import { refreshPostStatus } from '../publisher';
+import { findNextSlot } from '../queue';
 import { Database } from '../services';
 
 type PostInput = PostFields;
@@ -29,6 +36,9 @@ const targetColumns = {
   externalUrl: postTarget.externalUrl,
   publishedAt: postTarget.publishedAt,
   nextAttemptAt: postTarget.nextAttemptAt,
+  firstCommentStatus: postTarget.firstCommentStatus,
+  firstCommentError: postTarget.firstCommentError,
+  pinnedAt: postTarget.pinnedAt,
 };
 
 /** Posts with their selected accounts, media (in order) and per-platform publish state. */
@@ -108,7 +118,11 @@ function readSelection(db: Db, userId: string, input: PostInput): Selection {
 }
 
 /** Why this post can't be saved as asked, or null. Scheduling is checked against every platform. */
-function problemWith(input: PostInput, { accounts, media }: Selection): string | null {
+function problemWith(
+  input: PostInput,
+  { accounts, media }: Selection,
+  options: RuleOptions,
+): string | null {
   if (accounts.length !== new Set(input.accountIds).size) {
     return 'One of the selected accounts no longer exists.';
   }
@@ -128,7 +142,9 @@ function problemWith(input: PostInput, { accounts, media }: Selection): string |
   const problems = accounts.flatMap((account) => {
     if (account.status !== 'active')
       return [`${account.displayName}: reconnect this account first.`];
-    const problem = platformProblem(account.platform, { ...input, media: attached, thumbnail });
+    const problem =
+      firstCommentProblem(account.platform, input.firstComment) ??
+      platformProblem(account.platform, { ...input, media: attached, thumbnail }, options);
     return problem ? [`${account.displayName}: ${problem}`] : [];
   });
   return problems.length ? problems.join('\n') : null;
@@ -152,6 +168,8 @@ function writePost(
     wordpressOptions: input.wordpressOptions
       ? { ...input.wordpressOptions, tags: input.wordpressOptions.tags.map((tag) => tag.trim()) }
       : null,
+    firstComment: input.firstComment?.trim() || null,
+    pinFirstComment: input.pinFirstComment,
     status: input.status,
     scheduledAt: input.scheduledAt,
   };
@@ -214,6 +232,7 @@ const isEditable = (status: string) => (EDITABLE_STATUSES as readonly string[]).
 export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
   Effect.gen(function* () {
     const { query, transaction } = handlerDatabase(yield* Database);
+    const mediaHosts = yield* MediaHosts;
 
     const loadPost = (userId: string, id: string) =>
       Effect.flatMap(
@@ -226,7 +245,8 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
       transaction(
         Effect.gen(function* () {
           const selection = yield* query((db) => readSelection(db, userId, input));
-          const problem = problemWith(input, selection);
+          const hasMediaHost = Option.isSome(yield* Effect.orDie(mediaHosts.forUser(userId)));
+          const problem = problemWith(input, selection, { hasMediaHost });
           if (problem) return yield* badRequest(problem);
           yield* query((db) => writePost(db, userId, id, input, isNew, selection.accounts));
           return yield* loadPost(userId, id);
@@ -259,6 +279,8 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
               featuredMediaId: input.featuredMediaId ?? null,
               thumbnailMediaId: input.thumbnailMediaId ?? null,
               wordpressOptions: input.wordpressOptions ?? null,
+              firstComment: input.firstComment ?? null,
+              pinFirstComment: input.pinFirstComment ?? false,
             },
             true,
           ),
@@ -288,6 +310,8 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
                 featuredMediaId: current.featuredMediaId,
                 thumbnailMediaId: current.thumbnailMediaId,
                 wordpressOptions: current.wordpressOptions,
+                firstComment: current.firstComment,
+                pinFirstComment: current.pinFirstComment,
                 ...input.changes,
               },
               false,
@@ -345,6 +369,93 @@ export const PostsHandlers = HttpApiBuilder.group(Api, 'posts', (handlers) =>
             return yield* loadPost(user.id, target.postId);
           }),
         ),
+
+      // One BEGIN IMMEDIATE transaction, run synchronously: two quick clicks can't share a slot.
+      enqueue: ({ payload: input }) =>
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const now = yield* Clock.currentTimeMillis;
+            const current = yield* loadPost(user.id, input.postId);
+            if (!isEditable(current.status)) {
+              return yield* conflict(
+                'This post has already started publishing and can no longer be edited.',
+              );
+            }
+            const slot = yield* query((db) =>
+              findNextSlot(db, user.id, now, {
+                accountIds: current.accountIds,
+                excludePostId: current.id,
+              }),
+            );
+            if (!slot) {
+              return yield* conflict('There is no free queue slot. Add posting times in Settings.');
+            }
+            return yield* savePost(
+              user.id,
+              current.id,
+              {
+                title: current.title,
+                body: current.body,
+                link: current.link,
+                status: 'scheduled',
+                scheduledAt: slot,
+                accountIds: current.accountIds,
+                mediaIds: current.mediaIds,
+                featuredMediaId: current.featuredMediaId,
+                thumbnailMediaId: current.thumbnailMediaId,
+                wordpressOptions: current.wordpressOptions,
+                firstComment: current.firstComment,
+                pinFirstComment: current.pinFirstComment,
+              },
+              false,
+            );
+          }),
+        ),
+
+      retryFirstComment: ({ payload: input }) =>
+        transaction(
+          Effect.gen(function* () {
+            const user = yield* CurrentUser;
+            const { target } = yield* ownTarget(user.id, input.targetId);
+            if (target.firstCommentStatus !== 'failed') {
+              return yield* conflict('Only a failed first comment can be retried.');
+            }
+            yield* query((db) =>
+              db
+                .update(postTarget)
+                // It may have been posted after all: the worker looks before sending.
+                .set({
+                  firstCommentStatus: 'pending',
+                  firstCommentAttempts: 0,
+                  firstCommentNextAt: null,
+                  firstCommentError: null,
+                  firstCommentCheck: true,
+                })
+                .where(eq(postTarget.id, target.id))
+                .run(),
+            );
+            return yield* loadPost(user.id, target.postId);
+          }),
+        ),
+
+      markPinned: ({ payload: input }) =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser;
+          const now = new Date(yield* Clock.currentTimeMillis);
+          const { target } = yield* ownTarget(user.id, input.targetId);
+          if (target.firstCommentStatus !== 'posted') {
+            return yield* conflict('The first comment has not been posted yet.');
+          }
+          yield* query((db) =>
+            db
+              .update(postTarget)
+              .set({ pinnedAt: input.pinned ? now : null })
+              .where(eq(postTarget.id, target.id))
+              .run(),
+          );
+          return yield* loadPost(user.id, target.postId);
+        }),
 
       markPosted: ({ payload: input }) =>
         transaction(

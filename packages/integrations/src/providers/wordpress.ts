@@ -7,6 +7,8 @@ import {
   isImage,
   isVideo,
   type ConnectedAccount,
+  type InsightsAdapter,
+  type PostMetrics,
   type MediaFile,
   type PlatformAdapter,
 } from '../types';
@@ -333,7 +335,32 @@ export function createWordPress(http: Http) {
     return all;
   });
 
-  return { connect, adapter, categories };
+  /** Core WordPress has no view counts (that needs Jetpack or a stats plugin); comments it has. */
+  const insights: InsightsAdapter<WordPressCredentials> = {
+    platform: 'wordpress',
+    scopes: [],
+    postMetrics: (credentials, postId) =>
+      Effect.gen(function* () {
+        const { response } = yield* http(
+          'wordpress',
+          get(
+            endpoint(credentials.apiBase, '/wp/v2/comments', {
+              post: postId,
+              per_page: '1',
+              _fields: 'id',
+            }),
+            { headers: basicAuth(credentials) },
+          ),
+        );
+        const total = Number(response.headers['x-wp-total']);
+        const metrics: PostMetrics = Number.isFinite(total)
+          ? { comments: total, raw: { comments: total } }
+          : { raw: {} };
+        return metrics;
+      }),
+  };
+
+  return { connect, adapter, categories, insights };
 }
 
 /** The id WordPress names when a tag already exists (`term_exists`). */

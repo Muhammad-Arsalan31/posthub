@@ -38,12 +38,20 @@ packages/api/        HttpApi handlers (routers/<area>.ts, assembled in src/route
   src/services.ts    Database, MediaDir services; layer.ts has apiLayer() (adds Vault, ProviderApps)
   src/connections.ts beginOAuth/completeOAuth/saveAccounts (platform connect flows, as Effects)
   src/publisher.ts   Publisher service + publisherWorker layer (background publishing, run by the server)
+  src/sync.ts        Sync service + syncWorker layer: background reads (post/account metrics) from `sync_job`
+  src/comments.ts    comment sync (upsertComments) and the outbox (comment_action) run by the sync worker
+  src/accounts.ts    makeCredentialAccess: decrypt, refresh, store tokens, mark expired (publisher + sync)
+  src/settings.ts    per-user `app_setting` rows (JSON, vault-encrypted when secret)
+  src/media-hosts.ts MediaHosts service: the owner's media host (S3 bucket), read per use
+  src/analytics.ts   analytics definitions (gains from snapshot deltas, engagement, buckets) + CSV
+  src/queue.ts       posting slots: nextSlotTime() (pure, DST-aware) and findNextSlot(db, ...)
   src/post-rules.ts  what each platform can publish; checked before a post is scheduled
   src/testing.ts     testContext(), sessionFor() for handler tests (@posthub/api/testing)
 packages/integrations/  platform connectors: no DB access, injectable fetch
   src/providers/     google (YouTube), meta (Facebook + Instagram), linkedin, wordpress
   src/registry.ts    createIntegrations(config): enabled providers + adapters, PROVIDERS metadata
   src/vault.ts       AES-256-GCM credential encryption
+  src/media-host.ts  MediaHost interface + S3-compatible implementation (SigV4 over node:crypto)
   src/testing.ts     createFakeFetch(), tempMedia() (@posthub/integrations/testing)
 packages/release/       semver helpers and the `pnpm release` CLI (src/cli.ts)
 ```
@@ -80,6 +88,8 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
 - In production, the server serves `apps/web/dist` itself, also same-origin.
 - `/api/auth/*` is better-auth. `/rpc/*` is the HttpApi from `@posthub/contract`; its `Authorization` middleware
   resolves the session cookie and provides `CurrentUser`.
+- `/analytics/export.csv?from&to[&accountId]` downloads analytics as CSV (session checked; a plain route because the
+  typed client only speaks JSON). Dev proxies it too.
 - `/files/:id` streams an uploaded media file to its owner (Range supported). Uploads go through the API
   (`media.upload` takes a `File`) and land in the media folder.
 - `/connect/:provider/start` and `/connect/:provider/callback` are the platform OAuth redirects (plain HttpRouter
@@ -125,15 +135,23 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
 - For non-collection data, use `api.<group>.<endpoint>.queryOptions()` / `.mutationOptions()` from `src/lib/api.ts`,
   and `api.<group>.key()` to invalidate. Errors are the contract's typed errors, with a user-facing `message`.
 - Signed-in pages live under `src/routes/_app/` (the guard is in `_app.tsx`). Use Mantine components; don't add CSS frameworks.
-- Installed Mantine extensions: form, dates (+dayjs), charts (+recharts), notifications, modals, tiptap
-  (+StarterKit, Link), dropzone, emoji. Their CSS and providers are already wired in `src/providers.tsx`.
+- Installed Mantine extensions: form, dates (+dayjs), schedule (the calendar page), charts (+recharts), notifications,
+  modals, tiptap (+StarterKit, Link), dropzone, emoji. Keep every `@mantine/*` on the same version: schedule pins its peers exactly. Their CSS and providers are already wired in `src/providers.tsx`.
   Use `notifications.show()` and `modals.openConfirmModal()` directly.
+- Charts use `@mantine/charts`; each platform has a fixed color (`--viz-<platform>` in `src/chart-colors.css`, a
+  validated palette with light and dark steps). Load the `dataviz` skill before changing charts.
 - Test files sit next to routes and are excluded from routing via `routeFileIgnorePattern` in `vite.config.ts`.
 
 ### Connectors (`packages/integrations`)
 
 - A **provider** is a connect flow (`google`, `meta`, `linkedin`, `wordpress`); an **adapter** publishes to one
   platform. One Meta login yields many accounts (each Page plus its linked Instagram account).
+- Reading numbers is a separate capability: `InsightsAdapter<C>` (`postMetrics`, optional `accountMetrics`, `scopes` it
+  needs), looked up with `integrations.insights(platform)` (undefined for LinkedIn and TikTok). Reads are safe to repeat,
+  so every failure there is retried later. A missing metric is `undefined`/null ("not available"), never zero.
+- Comments are `EngagementAdapter<C>` (`listComments`, `reply`, `setLike`, `moderate`, `capabilities`, `scopes`), looked
+  up with `integrations.engagement(platform)` (files `providers/*-engagement.ts`). The web app reads `Account.engagement`
+  (the capabilities) instead of branching on platform names.
 - Adapters implement `PlatformAdapter<C>`: `publish(credentials, input)` and optional `refresh(credentials)`, each
   returning an `Effect` that fails with `PublishError` (`PlatformError | TransportError`). They receive decrypted
   credentials and never touch the DB. Callers persist refreshed credentials.
@@ -182,7 +200,11 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
   to Pages; Instagram requires Business/Creator accounts and may need publicly reachable media URLs;
   YouTube has upload quotas. **TikTok uses a manual handoff** (target status `manual`), because Direct Post
   isn't available for private tools.
-- Instagram needs a **public media URL** (`MediaFile.publicUrl`); local files alone are not enough. YouTube needs a video.
+- Instagram needs a **public media URL** (`MediaFile.publicUrl`). Adapters with `needsPublicMedia` get their files put on
+  the owner's **media host** (Settings page, `app_setting` key `mediaHost`) in the publisher's `upload` phase, under the key
+  `<targetId>/<mediaId><ext>`. Each key is recorded in `hosted_media` before the upload and the object is deleted when the
+  attempt ends (`sweepHostedMedia` at startup cleans up after a crash). Upload failures back off like platform errors:
+  nothing was posted yet. Without a media host, Instagram cannot be scheduled. YouTube needs a video.
   LinkedIn supports text, link, and single-image posts (video comes later).
 - **Post lifecycle:** the owner sets `draft` or `scheduled` ("Publish now" means scheduled at now). The publisher moves a
   due post to `publishing`, claims each `pending` target, and the post ends `published`/`failed` based on its targets.
@@ -199,8 +221,27 @@ removing the dead code or dependency; add an ignore to `knip.jsonc` only for gen
   them (they only get attached media). `post.wordpressOptions` holds tags (names, created on the site if missing) and
   categories per WordPress account id.
 - When changing what an adapter accepts, update `packages/api/src/post-rules.ts` and `apps/web/src/lib/platforms.ts` together.
+- **Metrics:** a target that becomes `published` gets a `post_metrics` sync job (inserted in the publisher's finish
+  transaction with `insertSyncJob(db, ...)`); each active account has an `account_metrics` job. The sync worker stores
+  snapshots (`post_metric_snapshot`, `account_metric_snapshot`) and reschedules by post age (`nextMetricsRun`). A job found
+  `running` at startup runs again. When a refresh is rejected the account is marked expired and its jobs `paused`;
+  `saveAccounts` resumes them. `social_account.grantedScopes` drives the "reconnect" hint (`Account.reconnectFor`).
+  TikTok numbers are typed in by hand (`metrics.setManual`).
+- **Comments:** each published target gets a `comments` sync job (every 10 minutes for a day, then like metrics). A sync
+  reads up to 10 pages, then upserts them in one transaction; after a complete read, comments missing from it get
+  `deletedAt`. Every write (reply, like, hide, delete) goes into `comment_action` first and the sync worker sends it.
+  A reply whose outcome is unknown (network failure, found `sending` at startup, or retried by the owner) gets
+  `checkFirst`: the worker reads the post's comments and only resends when no own comment with the same text exists.
+- **First comment:** `post.firstComment` is posted under the post by the sync worker as its own step
+  (`post_target.firstCommentStatus`), so it never fails or reposts the post: the publisher only sets it `pending` in the
+  same `finish` update that publishes the target. It follows the reply rules (`firstCommentCheck` before any resend).
+  No platform lets apps pin comments: `pinFirstComment` gives the owner a link and steps, and `posts.markPinned` records it.
+  Comment rules (length, Instagram's 30 hashtags) live in `firstCommentProblem` (post-rules.ts, mirrored in platforms.ts).
+- **Queue:** `queue_slot` rows are weekly wall-clock times in the owner's time zone (`app_setting` key `timezone`, sent by
+  the browser when slots are saved). `posts.enqueue` picks the first future slot no scheduled post has, inside one
+  synchronous transaction, so concurrent enqueues get different slots.
 - Shutdown: Ctrl+C/SIGTERM interrupts the program; the publisher's scope waits for jobs in progress.
-- Planned next: public media URLs (for Instagram), LinkedIn video, then a Windows startup/Electron shell.
+- Planned next: LinkedIn video, then a Windows startup/Electron shell.
 
 ## Releases
 

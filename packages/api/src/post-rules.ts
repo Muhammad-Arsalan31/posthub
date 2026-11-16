@@ -17,8 +17,17 @@ interface RuleInput {
 
 const isVideo = (m: { mimeType: string }) => m.mimeType.startsWith('video/');
 
+export interface RuleOptions {
+  /** The owner has a media host, so platforms that download media from a URL can be used. */
+  hasMediaHost?: boolean;
+}
+
 /** A reason this post can't go to `platform`, or null when it can. */
-export function platformProblem(platform: Platform, post: RuleInput): string | null {
+export function platformProblem(
+  platform: Platform,
+  post: RuleInput,
+  options: RuleOptions = {},
+): string | null {
   const hasVideo = post.media.some(isVideo);
   switch (platform) {
     case 'youtube':
@@ -32,7 +41,9 @@ export function platformProblem(platform: Platform, post: RuleInput): string | n
       return null;
     case 'instagram':
       if (post.media.length !== 1) return 'Instagram needs exactly one image or video.';
-      return 'Instagram needs a public media URL, which PostHub cannot provide yet.';
+      return options.hasMediaHost
+        ? null
+        : 'Set up a media host in Settings to publish to Instagram.';
     case 'linkedin':
       return hasVideo ? 'LinkedIn video posts are not supported yet.' : null;
     case 'facebook':
@@ -49,3 +60,27 @@ export function platformProblem(platform: Platform, post: RuleInput): string | n
 
 /** TikTok has no API for private tools: those targets are handed off to the owner. */
 export const isManualPlatform = (platform: Platform) => platform === 'tiktok';
+
+const FIRST_COMMENT_LIMITS: Partial<Record<Platform, number>> = {
+  youtube: 10_000,
+  facebook: 8_000,
+  instagram: 2_200,
+};
+
+/**
+ * Why the first comment can't go to `platform`, or null. Platforms without comment support
+ * (LinkedIn, TikTok) are not a problem: the comment is just not posted there.
+ * apps/web/src/lib/platforms.ts mirrors this.
+ */
+export function firstCommentProblem(platform: Platform, comment: string | null): string | null {
+  const text = comment?.trim();
+  if (!text) return null;
+  const limit = FIRST_COMMENT_LIMITS[platform];
+  if (limit && text.length > limit) {
+    return `The first comment is too long for this platform (at most ${limit.toLocaleString()} characters).`;
+  }
+  if (platform === 'instagram' && (text.match(/#[\p{L}\p{N}_]+/gu)?.length ?? 0) > 30) {
+    return 'Instagram allows at most 30 hashtags in a comment.';
+  }
+  return null;
+}

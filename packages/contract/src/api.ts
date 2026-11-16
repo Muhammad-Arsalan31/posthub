@@ -11,12 +11,25 @@ import {
 } from 'effect/http-api';
 import {
   Account,
+  AnalyticsMetric,
+  AnalyticsOverview,
+  AnalyticsSeries,
+  BestTimeCell,
+  ContentTypeStats,
   EditableStatus,
+  InboxComment,
+  InboxThread,
+  MediaHostSettings,
   MediaItem,
   OAuthProviderId,
   Platform,
   Post,
+  PostTotals,
   Provider,
+  QueueSettings,
+  SavedReply,
+  TargetMetrics,
+  TopPost,
   User,
   WordPressCategory,
 } from './domain';
@@ -100,6 +113,8 @@ export const PostFields = Schema.Struct({
   featuredMediaId: Schema.NullOr(Schema.String),
   thumbnailMediaId: Schema.NullOr(Schema.String),
   wordpressOptions: Schema.NullOr(WordPressOptionsInput),
+  firstComment: Schema.NullOr(bounded(10_000)),
+  pinFirstComment: Schema.Boolean,
 });
 export type PostFields = typeof PostFields.Type;
 
@@ -113,6 +128,8 @@ const optionalFields = {
   featuredMediaId: Schema.optionalKey(PostFields.fields.featuredMediaId),
   thumbnailMediaId: Schema.optionalKey(PostFields.fields.thumbnailMediaId),
   wordpressOptions: Schema.optionalKey(PostFields.fields.wordpressOptions),
+  firstComment: Schema.optionalKey(PostFields.fields.firstComment),
+  pinFirstComment: Schema.optionalKey(PostFields.fields.pinFirstComment),
 };
 
 /** The client supplies the id so TanStack DB can insert optimistically. */
@@ -150,6 +167,24 @@ export class PostsApi extends HttpApiGroup.make('posts')
     HttpApiEndpoint.post('delete', '/delete', { payload: Id, success: Id, error: ApiErrors }),
     /** Queue a failed target again. The publisher picks it up on its next pass. */
     HttpApiEndpoint.post('retry', '/retry', { payload: TargetId, success: Post, error: ApiErrors }),
+    /** Schedules the post at the next free queue slot. Fails with Conflict when there is none. */
+    HttpApiEndpoint.post('enqueue', '/enqueue', {
+      payload: Schema.Struct({ postId: Schema.String }),
+      success: Post,
+      error: ApiErrors,
+    }),
+    /** Tries a failed first comment again (checking first that it isn't already there). */
+    HttpApiEndpoint.post('retryFirstComment', '/retry-first-comment', {
+      payload: TargetId,
+      success: Post,
+      error: ApiErrors,
+    }),
+    /** The owner pinned the first comment in the platform's app (no API can). */
+    HttpApiEndpoint.post('markPinned', '/mark-pinned', {
+      payload: Schema.Struct({ targetId: Schema.String, pinned: Schema.Boolean }),
+      success: Post,
+      error: ApiErrors,
+    }),
     /** The owner posted a manual-handoff target (TikTok) themselves. */
     HttpApiEndpoint.post('markPosted', '/mark-posted', {
       payload: Schema.Struct({ targetId: Schema.String, url: Schema.optionalKey(HttpUrl) }),
@@ -229,10 +264,240 @@ export class ProviderAppsApi extends HttpApiGroup.make('providerApps')
   .middleware(Authorization)
   .prefix('/rpc/provider-apps') {}
 
+/** The media host form. Leave the secret empty to keep the current one. */
+export const MediaHostInput = Schema.Struct({
+  endpoint: HttpUrl,
+  region: required(100),
+  bucket: required(200),
+  accessKeyId: required(500),
+  secretAccessKey: Schema.optionalKey(bounded(500)),
+  publicBaseUrl: Schema.optionalKey(Schema.NullOr(HttpUrl)),
+});
+export type MediaHostInput = typeof MediaHostInput.Type;
+
+const Ok = Schema.Struct({ ok: Schema.Boolean });
+
+export class SettingsApi extends HttpApiGroup.make('settings')
+  .add(
+    HttpApiEndpoint.get('mediaHost', '/media-host', {
+      success: Schema.NullOr(MediaHostSettings),
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('saveMediaHost', '/media-host', {
+      payload: MediaHostInput,
+      success: MediaHostSettings,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('removeMediaHost', '/media-host/remove', {
+      success: Ok,
+      error: ApiErrors,
+    }),
+    /** Uploads a tiny file with these settings, downloads it anonymously and deletes it. */
+    HttpApiEndpoint.post('testMediaHost', '/media-host/test', {
+      payload: MediaHostInput,
+      success: Ok,
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/settings') {}
+
+export class QueueApi extends HttpApiGroup.make('queue')
+  .add(
+    HttpApiEndpoint.get('slots', '/slots', { success: QueueSettings, error: ApiErrors }),
+    /** Replaces every slot (and the time zone they are in). */
+    HttpApiEndpoint.post('saveSlots', '/slots', {
+      payload: Schema.Struct({
+        timezone: QueueSettings.fields.timezone,
+        slots: QueueSettings.fields.slots.check(Schema.isMaxLength(200)),
+      }),
+      success: QueueSettings,
+      error: ApiErrors,
+    }),
+    /** The next slot no scheduled post has yet, or null. */
+    HttpApiEndpoint.get('nextSlot', '/next', {
+      success: Schema.Struct({ at: Schema.NullOr(Schema.Date) }),
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/queue') {}
+
+const ManualCount = Schema.optionalKey(
+  Schema.NullOr(Schema.Number.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
+);
+
+export class MetricsApi extends HttpApiGroup.make('metrics')
+  .add(
+    /** Numbers for each of a post's targets. */
+    HttpApiEndpoint.get('forPost', '/post', {
+      payload: { postId: Schema.String },
+      success: List(TargetMetrics),
+      error: ApiErrors,
+    }),
+    /** Latest totals for every post that has numbers. */
+    HttpApiEndpoint.get('totals', '/totals', { success: List(PostTotals), error: ApiErrors }),
+    /** Reads the post's numbers again on the next pass of the sync worker. */
+    HttpApiEndpoint.post('refresh', '/refresh', {
+      payload: Schema.Struct({ postId: Schema.String }),
+      success: Schema.Struct({ ok: Schema.Boolean }),
+      error: ApiErrors,
+    }),
+    /** Numbers typed in by the owner (TikTok and other platforms PostHub can't read). */
+    HttpApiEndpoint.post('setManual', '/manual', {
+      payload: Schema.Struct({
+        targetId: Schema.String,
+        views: ManualCount,
+        likes: ManualCount,
+        comments: ManualCount,
+        shares: ManualCount,
+      }),
+      success: TargetMetrics,
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/metrics') {}
+
+/** A period of time, optionally for some accounts only. */
+const Range = {
+  from: Schema.Date,
+  to: Schema.Date,
+  accountIds: Schema.optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+};
+
+export class AnalyticsApi extends HttpApiGroup.make('analytics')
+  .add(
+    HttpApiEndpoint.post('overview', '/overview', {
+      payload: Schema.Struct(Range),
+      success: AnalyticsOverview,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('timeseries', '/timeseries', {
+      payload: Schema.Struct({
+        ...Range,
+        metric: AnalyticsMetric,
+        groupBy: Schema.Literals(['day', 'week']),
+      }),
+      success: AnalyticsSeries,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('topPosts', '/top-posts', {
+      payload: Schema.Struct({
+        ...Range,
+        metric: AnalyticsMetric,
+        limit: Schema.Number.check(Schema.isInt(), Schema.isBetween({ minimum: 1, maximum: 100 })),
+      }),
+      success: List(TopPost),
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('bestTimes', '/best-times', {
+      payload: Schema.Struct({ accountIds: Range.accountIds }),
+      success: Schema.Struct({ timezone: Schema.String, cells: List(BestTimeCell) }),
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('byContentType', '/content-types', {
+      payload: Schema.Struct(Range),
+      success: List(ContentTypeStats),
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/analytics') {}
+
+export class InboxApi extends HttpApiGroup.make('inbox')
+  .add(
+    /** Conversations, newest activity first. */
+    HttpApiEndpoint.post('list', '/list', {
+      payload: Schema.Struct({
+        accountIds: Schema.optionalKey(Schema.mutable(Schema.Array(Schema.String))),
+        postId: Schema.optionalKey(Schema.String),
+        unread: Schema.optionalKey(Schema.Boolean),
+        archived: Schema.optionalKey(Schema.Boolean),
+      }),
+      success: List(InboxThread),
+      error: ApiErrors,
+    }),
+    /** A conversation's comments, oldest first. */
+    HttpApiEndpoint.get('thread', '/thread', {
+      payload: { commentId: Schema.String },
+      success: List(InboxComment),
+      error: ApiErrors,
+    }),
+    /** Reads every published post's comments on the sync worker's next pass (within a minute). */
+    HttpApiEndpoint.post('checkNow', '/check', { success: Ok, error: ApiErrors }),
+    HttpApiEndpoint.get('unreadCount', '/unread', {
+      success: Schema.Struct({ count: Schema.Number }),
+      error: ApiErrors,
+    }),
+    /** Queues a reply; the sync worker sends it within a minute. */
+    HttpApiEndpoint.post('reply', '/reply', {
+      payload: Schema.Struct({ commentId: Schema.String, text: required(5000) }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('setLike', '/like', {
+      payload: Schema.Struct({ commentId: Schema.String, liked: Schema.Boolean }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('moderate', '/moderate', {
+      payload: Schema.Struct({
+        commentId: Schema.String,
+        action: Schema.Literals(['hide', 'unhide', 'delete']),
+      }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('markRead', '/read', {
+      payload: Schema.Struct({
+        commentIds: Schema.mutable(Schema.Array(Schema.String).check(Schema.isMaxLength(500))),
+      }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('archive', '/archive', {
+      payload: Schema.Struct({ commentId: Schema.String, archived: Schema.Boolean }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+    /** Sends a failed reply or moderation step again. */
+    HttpApiEndpoint.post('retryAction', '/retry', {
+      payload: Schema.Struct({ actionId: Schema.String }),
+      success: Ok,
+      error: ApiErrors,
+    }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/inbox') {}
+
+export class SavedRepliesApi extends HttpApiGroup.make('savedReplies')
+  .add(
+    HttpApiEndpoint.get('list', '/', { success: List(SavedReply), error: ApiErrors }),
+    HttpApiEndpoint.post('save', '/save', {
+      payload: Schema.Struct({
+        id: Schema.optionalKey(Schema.String),
+        title: required(100),
+        body: required(5000),
+      }),
+      success: SavedReply,
+      error: ApiErrors,
+    }),
+    HttpApiEndpoint.post('delete', '/delete', { payload: Id, success: Id, error: ApiErrors }),
+  )
+  .middleware(Authorization)
+  .prefix('/rpc/saved-replies') {}
+
 export class Api extends HttpApi.make('posthub')
   .add(SystemApi)
   .add(PostsApi)
   .add(MediaApi)
   .add(AccountsApi)
   .add(ProviderAppsApi)
+  .add(SettingsApi)
+  .add(QueueApi)
+  .add(MetricsApi)
+  .add(AnalyticsApi)
+  .add(InboxApi)
+  .add(SavedRepliesApi)
   .middleware(InputValidation) {}

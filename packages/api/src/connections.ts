@@ -5,6 +5,7 @@ import { Vault, type ConnectedAccount, type Integrations } from '@posthub/integr
 import { eq, lt } from 'drizzle-orm';
 import { Clock, Effect, Schema } from 'effect';
 import { Database } from './services';
+import { resumeAccountJobs } from './sync';
 
 const STATE_TTL_MS = 10 * 60_000;
 
@@ -110,9 +111,11 @@ export const saveAccounts = Effect.fn('saveAccounts')(function* (
           displayName: account.displayName,
           credentials: vault.encrypt(account.credentials),
           tokenExpiresAt: account.tokenExpiresAt,
+          grantedScopes: account.grantedScopes ?? null,
           status: 'active' as const,
         };
-        db.insert(socialAccount)
+        const saved = db
+          .insert(socialAccount)
           .values({
             id: randomUUID(),
             platform: account.platform,
@@ -123,7 +126,10 @@ export const saveAccounts = Effect.fn('saveAccounts')(function* (
             target: [socialAccount.platform, socialAccount.externalId],
             set: { ...values, updatedAt },
           })
-          .run();
+          .returning({ id: socialAccount.id })
+          .get();
+        // A reconnect restarts metrics jobs that waited for it.
+        resumeAccountJobs(db, saved.id, updatedAt);
       }
     }),
   );

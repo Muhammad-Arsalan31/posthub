@@ -11,7 +11,7 @@ const googleFetch = () =>
   createFakeFetch([
     [
       'POST https://oauth2.googleapis.com/token',
-      () => ({ access_token: 'at', refresh_token: 'rt', expires_in: 3600 }),
+      () => ({ access_token: 'at', refresh_token: 'refresh-token-plaintext', expires_in: 3600 }),
     ],
     [
       'GET https://www.googleapis.com/youtube/v3/channels',
@@ -51,9 +51,10 @@ describe('OAuth connect flow', () => {
 
     const [row] = db.select().from(socialAccount).all();
     expect(row).toMatchObject({ platform: 'youtube', externalId: 'UC1', displayName: 'Chan' });
-    expect(row!.credentials).not.toContain('rt');
+    // Long enough that random ciphertext can't contain it by chance.
+    expect(row!.credentials).not.toContain('refresh-token-plaintext');
     expect(Effect.runSync(ctx.vault.decrypt(row!.credentials!))).toMatchObject({
-      refreshToken: 'rt',
+      refreshToken: 'refresh-token-plaintext',
     });
     expect(db.select().from(oauthState).all()).toHaveLength(0);
   });

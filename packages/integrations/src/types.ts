@@ -49,6 +49,8 @@ export interface ConnectedAccount<C = unknown> {
   displayName: string;
   credentials: C;
   tokenExpiresAt: Date | null;
+  /** OAuth scopes granted, when the platform reports them. */
+  grantedScopes?: string[];
 }
 
 export interface RefreshResult<C> {
@@ -62,6 +64,8 @@ export interface RefreshResult<C> {
  */
 export interface PlatformAdapter<C> {
   readonly platform: Platform;
+  /** The platform downloads media from `MediaFile.publicUrl` (the publisher puts it on the media host). */
+  readonly needsPublicMedia?: boolean;
   publish(credentials: C, input: PublishInput): Effect.Effect<PublishResult, PublishError>;
   refresh?(credentials: C): Effect.Effect<RefreshResult<C>, PublishError>;
 }
@@ -81,3 +85,113 @@ export const isVideo = (m: MediaFile) => m.mimeType.startsWith('video/');
 /** Append the link to the text for platforms without a separate link field. */
 export const withLink = (text: string, link?: string) =>
   link && !text.includes(link) ? `${text}\n\n${link}`.trim() : text;
+
+/** Numbers for one published post. A missing field means "not available", never zero. */
+export interface PostMetrics {
+  views?: number;
+  reach?: number;
+  likes?: number;
+  comments?: number;
+  shares?: number;
+  saves?: number;
+  clicks?: number;
+  watchTimeSec?: number;
+  /** Platform-specific extras, kept for later. */
+  raw: Record<string, number>;
+}
+
+export interface AccountMetrics {
+  followers?: number;
+  reach?: number;
+  raw: Record<string, number>;
+}
+
+/**
+ * Reads numbers from a platform. Reads are safe to repeat, so callers retry any failure
+ * (including network errors) later. `refresh` is the publish adapter's, when it has one.
+ */
+export interface InsightsAdapter<C> {
+  readonly platform: Platform;
+  /** OAuth scopes the reads need, beyond what publishing needs. */
+  readonly scopes: readonly string[];
+  postMetrics(credentials: C, externalPostId: string): Effect.Effect<PostMetrics, PublishError>;
+  accountMetrics?(credentials: C): Effect.Effect<AccountMetrics, PublishError>;
+  refresh?(credentials: C): Effect.Effect<RefreshResult<C>, PublishError>;
+}
+
+/** Drops undefined values and non-numbers, for `raw`. */
+export const numbers = (values: Record<string, unknown>): Record<string, number> =>
+  Object.fromEntries(
+    Object.entries(values).flatMap(([key, value]) => {
+      const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+      return typeof n === 'number' && Number.isFinite(n) ? [[key, n]] : [];
+    }),
+  );
+
+/** A comment as a platform returns it. */
+export interface RemoteComment {
+  externalId: string;
+  /** The comment this one replies to, if any. */
+  parentExternalId: string | null;
+  authorName: string;
+  authorAvatarUrl: string | null;
+  authorId: string | null;
+  text: string;
+  likeCount: number | null;
+  /** The owner has liked it (where the platform says). */
+  likedByMe: boolean;
+  createdAt: Date;
+  /** Written by the connected account itself. */
+  isOwn: boolean;
+  hidden: boolean;
+}
+
+/** Where a comment lives: what reply and moderation calls need. */
+export interface CommentRef {
+  externalId: string;
+  /** The top-level comment of its thread (YouTube replies attach there). */
+  threadExternalId: string;
+  /** The post (video, page post, media, blog post) it is on. */
+  postExternalId: string;
+}
+
+export interface EngagementCapabilities {
+  reply: boolean;
+  like: boolean;
+  hide: boolean;
+  delete: boolean;
+}
+
+export type ModerationAction = 'hide' | 'unhide' | 'delete';
+
+/**
+ * Reads and answers comments. `reply` creates something: once the creating request succeeds,
+ * the effect must not fail (a retry would reply twice).
+ */
+export interface EngagementAdapter<C> {
+  readonly platform: Platform;
+  readonly capabilities: EngagementCapabilities;
+  /** OAuth scopes the comment calls need. */
+  readonly scopes: readonly string[];
+  /** Parent used when replying: some platforms flatten replies onto the top-level comment. */
+  replyParentId(ref: CommentRef): string;
+  listComments(
+    credentials: C,
+    post: { externalPostId: string; accountExternalId: string },
+    cursor?: string,
+  ): Effect.Effect<{ comments: RemoteComment[]; next?: string }, PublishError>;
+  reply(credentials: C, ref: CommentRef, text: string): Effect.Effect<RemoteComment, PublishError>;
+  /** A new top-level comment on a post (the "first comment"). Must not fail once created. */
+  postComment(
+    credentials: C,
+    externalPostId: string,
+    text: string,
+  ): Effect.Effect<RemoteComment, PublishError>;
+  setLike(credentials: C, ref: CommentRef, liked: boolean): Effect.Effect<void, PublishError>;
+  moderate(
+    credentials: C,
+    ref: CommentRef,
+    action: ModerationAction,
+  ): Effect.Effect<void, PublishError>;
+  refresh?(credentials: C): Effect.Effect<RefreshResult<C>, PublishError>;
+}

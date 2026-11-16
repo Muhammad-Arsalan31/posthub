@@ -1,4 +1,4 @@
-import { post, postTarget, socialAccount, type Db } from '@posthub/db';
+import { post, postTarget, socialAccount, syncJob, type Db } from '@posthub/db';
 import { createTestDb, seedUser } from '@posthub/db/testing';
 import type { WordPressCredentials } from '@posthub/integrations';
 import { createFakeFetch } from '@posthub/integrations/testing';
@@ -72,6 +72,7 @@ const setup = Effect.fnUntraced(function* (
         body?: string;
         featuredMediaId?: string;
         wordpressOptions?: { tags: string[]; categories: Record<string, number[]> };
+        firstComment?: string;
       } = {},
     ) =>
       Effect.promise(() =>
@@ -117,6 +118,12 @@ describe('publisher', () => {
         lockedAt: null,
       });
       expect(state(db, later.id).post.status).toBe('scheduled');
+      // Its comments are read 2 minutes after publishing, its numbers after 15.
+      const subjectId = state(db, due.id).target.id;
+      expect(db.select().from(syncJob).all()).toMatchObject([
+        { kind: 'post_metrics', subjectId, nextRunAt: new Date('2030-01-01T09:15:00Z') },
+        { kind: 'comments', subjectId, nextRunAt: new Date('2030-01-01T09:02:00Z') },
+      ]);
       expect(fake.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
         `POST ${API}/wp/v2/media`,
         `POST ${API}/wp/v2/posts`,
@@ -202,6 +209,22 @@ describe('publisher', () => {
         lastError: 'wordpress: busy',
       });
       expect(state(db, id).post.status).toBe('failed');
+    }),
+  );
+
+  it.effect('queues the first comment with the publish, as its own step', () =>
+    Effect.gen(function* () {
+      const { db, publisher, schedule } = yield* setup();
+      const withComment = yield* schedule(new Date('2030-01-01T08:00:00Z'), {
+        firstComment: 'Hi!',
+      });
+      const without = yield* schedule(new Date('2030-01-01T08:00:00Z'));
+      yield* publisher.tick;
+      expect(state(db, withComment.id).target).toMatchObject({
+        status: 'published',
+        firstCommentStatus: 'pending',
+      });
+      expect(state(db, without.id).target.firstCommentStatus).toBe('none');
     }),
   );
 

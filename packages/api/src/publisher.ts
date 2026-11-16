@@ -5,8 +5,9 @@
 //   3. The post's status is recomputed from its targets.
 // A target found in `publishing` at startup was interrupted mid-call: it may or may not have gone out,
 // so it is marked failed for the owner to check instead of being retried (posts never duplicate).
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import {
+  hostedMedia,
   mediaAsset,
   post,
   postMedia,
@@ -21,11 +22,9 @@ import {
   PlatformError,
   platformError,
   PROVIDERS,
-  refreshIfExpiring,
-  Vault,
   type MediaFile,
 } from '@posthub/integrations';
-import { and, asc, eq, isNull, lte, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, lte, notInArray, or, type SQL } from 'drizzle-orm';
 import {
   Cause,
   Clock,
@@ -39,12 +38,19 @@ import {
   Schedule,
   type Scope,
 } from 'effect';
+import { makeCredentialAccess } from './accounts';
 import { inlineMediaIds, inlineRef } from './inline-media';
+import { MediaHosts } from './media-hosts';
 import { ProviderApps } from './provider-apps';
+import { insertSyncJob } from './sync';
 import { Database, type DatabaseError, MediaDir } from './services';
 
-/** Waits before retry 1, 2 and 3 of a retryable failure (429, 5xx, still processing). */
-export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+import { RETRY_DELAYS_MS } from './retry';
+
+export { RETRY_DELAYS_MS };
+
+/** First reads after publishing: numbers need a while to mean anything; comments can come at once. */
+const FIRST_READ_DELAY_MS = { post_metrics: 15 * 60_000, comments: 2 * 60_000 } as const;
 
 export const INTERRUPTED_MESSAGE =
   'PostHub stopped while this was publishing. Check the platform to see whether it went out, then retry if it did not.';
@@ -82,17 +88,24 @@ export interface PublisherService {
   readonly startJobs: Effect.Effect<void, DatabaseError>;
   /** Like `startJobs`, but waits until the jobs it started have finished. */
   readonly tick: Effect.Effect<void, DatabaseError>;
+  /**
+   * Deletes media-host objects whose target is not publishing (left behind by a crash). Succeeds
+   * with how many were removed; objects that can't be removed are kept for next time.
+   */
+  readonly sweepHostedMedia: Effect.Effect<number, DatabaseError>;
 }
 
 type ClaimedTarget = typeof postTarget.$inferSelect;
-type Phase = 'prepare' | 'refresh' | 'publish';
+type Phase = 'prepare' | 'refresh' | 'upload' | 'publish';
 
 const now = Effect.map(Clock.currentTimeMillis, (ms) => new Date(ms));
 
 export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: PublisherOptions) {
   const database = yield* Database;
-  const vault = yield* Vault;
+  // Refreshes and stores tokens; marks the account expired when a refresh is rejected.
+  const credentialAccess = yield* makeCredentialAccess;
   const providerApps = yield* ProviderApps;
+  const mediaHosts = yield* MediaHosts;
   const mediaDir = yield* MediaDir;
   // Jobs run in this set; closing the publisher's scope waits for them (they are uninterruptible).
   const jobs = yield* FiberSet.make<void>();
@@ -168,9 +181,10 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
     };
   }
 
-  function loadMedia(db: Db, postId: string): MediaFile[] {
+  function loadMedia(db: Db, postId: string): Array<MediaFile & { id: string }> {
     return db
       .select({
+        id: mediaAsset.id,
         storagePath: mediaAsset.storagePath,
         fileName: mediaAsset.fileName,
         mimeType: mediaAsset.mimeType,
@@ -192,8 +206,99 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
           .where(eq(postTarget.id, target.id))
           .run();
         refreshPostStatus(db, target.postId);
+        if (changes.status === 'published' && changes.externalPostId && changes.publishedAt) {
+          // Start reading its numbers soon; the sync worker reschedules by age after that.
+          for (const kind of ['post_metrics', 'comments'] as const) {
+            insertSyncJob(db, {
+              kind,
+              subjectId: target.id,
+              socialAccountId: target.socialAccountId,
+              nextRunAt: new Date(changes.publishedAt.getTime() + FIRST_READ_DELAY_MS[kind]),
+            });
+          }
+        }
       }),
     );
+
+  /**
+   * Puts each file on the owner's media host and returns them with their public URLs. Keys are
+   * deterministic, so a retry overwrites instead of piling up objects. Each key is recorded
+   * before its upload, so a crash never leaves an object nobody knows about.
+   */
+  const hostMedia = Effect.fnUntraced(function* (
+    target: ClaimedTarget,
+    userId: string,
+    media: Array<MediaFile & { id: string }>,
+  ) {
+    // A retry must finish cleaning an earlier destination before reusing the same object keys.
+    yield* removeHostedMedia(eq(hostedMedia.targetId, target.id));
+    const leftover = yield* database.use((db) =>
+      db
+        .select({ key: hostedMedia.key })
+        .from(hostedMedia)
+        .where(eq(hostedMedia.targetId, target.id))
+        .limit(1)
+        .get(),
+    );
+    if (leftover)
+      return yield* platformError(
+        'media-host',
+        'Could not clean up the previous media upload. Try again after checking the original media host.',
+        { retryable: true },
+      );
+    const host = yield* mediaHosts.capture(userId);
+    if (Option.isNone(host)) {
+      return yield* platformError('media-host', 'Set up a media host in Settings, then retry.', {
+        retryable: false,
+      });
+    }
+    const hosted: Array<MediaFile & { id: string }> = [];
+    for (const file of media) {
+      const key = `${target.id}/${file.id}${extname(file.fileName).toLowerCase()}`;
+      yield* database.use((db) =>
+        db
+          .insert(hostedMedia)
+          .values({ key, userId, targetId: target.id, hostConfig: host.value.encryptedConfig })
+          .onConflictDoNothing()
+          .run(),
+      );
+      const { url } = yield* host.value.host.put(file, key);
+      hosted.push({ ...file, publicUrl: url });
+    }
+    return hosted;
+  });
+
+  /** Deletes hosted objects matching `where`. A failure is logged and the row kept for the next sweep. */
+  const removeHostedMedia = (where: SQL | undefined) =>
+    Effect.gen(function* () {
+      const rows = yield* database.use((db) => db.select().from(hostedMedia).where(where).all());
+      let removed = 0;
+      for (const row of rows) {
+        const done = yield* Effect.gen(function* () {
+          const host = row.hostConfig
+            ? Option.some(yield* mediaHosts.restore(row.hostConfig))
+            : yield* mediaHosts.forUser(row.userId);
+          if (Option.isNone(host)) {
+            yield* Effect.logWarning(
+              `[publisher] no media host to delete ${row.key} from; kept until one is set up`,
+            );
+            return false;
+          }
+          yield* host.value.remove(row.key);
+          return true;
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.as(Effect.logWarning(`[publisher] could not delete ${row.key}`, cause), false),
+          ),
+        );
+        if (!done) continue;
+        yield* database.use((db) =>
+          db.delete(hostedMedia).where(eq(hostedMedia.key, row.key)).run(),
+        );
+        removed++;
+      }
+      return removed;
+    });
 
   const publishTarget = (target: ClaimedTarget) => {
     let phase: Phase = 'prepare';
@@ -223,7 +328,9 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
           { retryable: false },
         );
       }
-      const adapter = (yield* providerApps.current).adapter(account.platform);
+      const integrations = yield* providerApps.current;
+      const adapter = integrations.adapter(account.platform);
+      const canComment = Boolean(integrations.engagement(account.platform));
       if (!adapter) {
         const label =
           PROVIDERS.find((p) => p.platforms.includes(account.platform))?.label ?? platform;
@@ -235,22 +342,11 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
       }
 
       phase = 'refresh';
-      let credentials = yield* vault.decrypt(account.credentials);
-      const refreshed = yield* refreshIfExpiring(adapter, credentials, account.tokenExpiresAt);
-      if (refreshed) {
-        credentials = refreshed.credentials;
-        const stored = vault.encrypt(refreshed.credentials);
-        const tokenExpiresAt = refreshed.tokenExpiresAt;
-        yield* database.use((db) =>
-          db
-            .update(socialAccount)
-            .set({ credentials: stored, tokenExpiresAt })
-            .where(eq(socialAccount.id, account.id))
-            .run(),
-        );
-      }
+      const credentials = yield* credentialAccess.fresh(
+        { ...account, credentials: account.credentials },
+        adapter,
+      );
 
-      phase = 'publish';
       const body = bodyFormats(content.body);
       const files = yield* database.use((db) => ({
         media: loadMedia(db, content.id),
@@ -261,6 +357,13 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
           return file ? [{ ref: inlineRef(mediaId), file }] : [];
         }),
       }));
+
+      if (adapter.needsPublicMedia && files.media.length) {
+        phase = 'upload';
+        files.media = yield* hostMedia(target, content.userId, files.media);
+      }
+
+      phase = 'publish';
       const result = yield* adapter.publish(credentials, {
         title: content.title,
         text: target.captionOverride ?? body.text,
@@ -282,12 +385,16 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
         // Kept on published targets so the owner sees partial problems (e.g. no thumbnail).
         lastError: result.warning ?? null,
         nextAttemptAt: null,
+        // The sync worker posts the first comment as its own step, so it can't affect the post.
+        firstCommentStatus: content.firstComment?.trim() && canComment ? 'pending' : 'none',
       });
       yield* Effect.logInfo(`[publisher] published ${target.id} to ${platform}`);
     });
 
     return attempt.pipe(
       Effect.catchCause((cause) => recordFailure(target, cause, phase, platform)),
+      // Files on the media host are public only while the target publishes.
+      Effect.ensuring(Effect.ignore(removeHostedMedia(eq(hostedMedia.targetId, target.id)))),
       // Never cut short: a half-finished upload must be recorded, not abandoned.
       Effect.uninterruptible,
     );
@@ -308,16 +415,6 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
           lastError: error.message,
           nextAttemptAt: new Date((yield* Clock.currentTimeMillis) + delay),
         });
-      }
-      if (phase === 'refresh' && !error.retryable) {
-        // The platform rejected the refresh token: the owner has to reconnect.
-        yield* database.use((db) =>
-          db
-            .update(socialAccount)
-            .set({ status: 'expired' })
-            .where(eq(socialAccount.id, target.socialAccountId))
-            .run(),
-        );
       }
       return yield* finish(target, { status: 'failed', lastError: error.message });
     }
@@ -371,6 +468,20 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
     recover,
     startJobs: Effect.asVoid(claimJobs),
     tick: Effect.flatMap(claimJobs, (started) => Fiber.awaitAll(started)).pipe(Effect.asVoid),
+    sweepHostedMedia: Effect.flatMap(
+      database.use((db) =>
+        db
+          .select({ id: postTarget.id })
+          .from(postTarget)
+          .where(eq(postTarget.status, 'publishing'))
+          .all()
+          .map((t) => t.id),
+      ),
+      (publishing) =>
+        removeHostedMedia(
+          publishing.length ? notInArray(hostedMedia.targetId, publishing) : undefined,
+        ),
+    ),
   });
 });
 
@@ -393,6 +504,9 @@ export const publisherWorker = (interval: Duration.Input = '5 seconds') =>
       if (interrupted) {
         yield* Effect.logInfo(`[publisher] marked ${interrupted} interrupted target(s) failed`);
       }
+      yield* publisher.sweepHostedMedia.pipe(
+        Effect.catchCause((cause) => Effect.logError('[publisher] media host cleanup', cause)),
+      );
       yield* publisher.startJobs.pipe(
         Effect.catchCause((cause) => Effect.logError('[publisher]', cause)),
         Effect.repeat(Schedule.spaced(interval)),

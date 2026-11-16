@@ -40,13 +40,22 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
         // API, auth, RPC, OAuth and media routes must always hit the server.
-        navigateFallbackDenylist: [/^\/api\//, /^\/rpc\//, /^\/connect\//, /^\/files\//],
+        navigateFallbackDenylist: [
+          /^\/api\//,
+          /^\/rpc\//,
+          /^\/connect\//,
+          /^\/files\//,
+          /^\/analytics\/export/,
+        ],
       },
     }),
   ],
   test: {
     environment: 'jsdom',
     setupFiles: ['./src/test/setup.ts'],
+    // Route tests render the whole app; the first one in a file loads every route's code
+    // (charts, calendar), which is slow while other packages' tests run in parallel.
+    testTimeout: 20_000,
   },
   server: {
     port: 5173,
@@ -56,6 +65,7 @@ export default defineConfig({
       '/rpc': apiTarget,
       '/connect': apiTarget,
       '/files': apiTarget,
+      '/analytics/export.csv': apiTarget,
     },
   },
 });

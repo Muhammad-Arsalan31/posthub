@@ -1,5 +1,6 @@
 import {
   ActionIcon,
+  Alert,
   Anchor,
   Badge,
   Button,
@@ -23,6 +24,8 @@ import { createFileRoute, Link, useNavigate } from '@tanstack/react-router';
 import dayjs from 'dayjs';
 import { useState } from 'react';
 import { postsCollection, type Post, type PostTarget } from '../../collections/posts';
+import { needsPin } from '../../components/first-comment';
+import { totalsText } from '../../components/post-metrics';
 import { bodyToText } from '../../lib/body';
 import { api, client } from '../../lib/api';
 import { PLATFORM_COLORS, PLATFORM_LABELS, type Account } from '../../lib/platforms';
@@ -57,6 +60,8 @@ function PostsPage() {
   const { session } = Route.useRouteContext();
   const [filter, setFilter] = useState<Filter>('all');
   const accounts = useQuery(api.accounts.list.queryOptions());
+  const totals = useQuery(api.metrics.totals.queryOptions({ refetchInterval: 60_000 }));
+  const totalsByPost = new Map((totals.data ?? []).map((t) => [t.postId, totalsText(t)]));
   const { data: posts, isLoading } = useLiveQuery((q) =>
     q.from({ post: postsCollection }).orderBy(({ post }) => post.updatedAt, 'desc'),
   );
@@ -65,6 +70,9 @@ function PostsPage() {
   const counts = new Map<string, number>();
   for (const post of posts) counts.set(post.status, (counts.get(post.status) ?? 0) + 1);
   const visible = filter === 'all' ? posts : posts.filter((p) => p.status === filter);
+  const toPin = posts.filter((p) =>
+    p.targets.some((t) => needsPin(p, t, accountsById.get(t.socialAccountId)?.platform)),
+  );
 
   function duplicate(post: Post) {
     const now = new Date();
@@ -112,6 +120,24 @@ function PostsPage() {
         </Button>
       </Group>
 
+      {toPin.length > 0 && (
+        <Alert color="grape" title="Comments to pin">
+          <Stack gap={4}>
+            {toPin.map((post) => (
+              <Anchor
+                key={post.id}
+                size="sm"
+                renderRoot={(rootProps) => (
+                  <Link {...rootProps} to="/posts/$postId" params={{ postId: post.id }} />
+                )}
+              >
+                {post.title}
+              </Anchor>
+            ))}
+          </Stack>
+        </Alert>
+      )}
+
       <SegmentedControl
         value={filter}
         onChange={(value) => setFilter(value as Filter)}
@@ -149,6 +175,7 @@ function PostsPage() {
             key={post.id}
             post={post}
             accountsById={accountsById}
+            totals={totalsByPost.get(post.id)}
             onDuplicate={() => duplicate(post)}
             onDelete={() => confirmDelete(post)}
           />
@@ -161,6 +188,8 @@ function PostsPage() {
 function PostCard(props: {
   post: Post;
   accountsById: Map<string, Account>;
+  /** Latest numbers, e.g. "120 views · 7 likes". */
+  totals?: string;
   onDuplicate: () => void;
   onDelete: () => void;
 }) {
@@ -194,15 +223,23 @@ function PostCard(props: {
                 {post.title}
               </Anchor>
             ) : (
-              <Text fw={600} truncate>
+              <Anchor
+                renderRoot={(rootProps) => (
+                  <Link {...rootProps} to="/posts/$postId" params={{ postId: post.id }} />
+                )}
+                fw={600}
+                c="inherit"
+                truncate
+              >
                 {post.title}
-              </Text>
+              </Anchor>
             )}
             {when && (
               <Text size="xs" c="dimmed">
                 {when}
                 {post.mediaIds.length > 0 &&
                   ` · ${post.mediaIds.length} file${post.mediaIds.length === 1 ? '' : 's'}`}
+                {props.totals && ` · ${props.totals}`}
               </Text>
             )}
           </Stack>

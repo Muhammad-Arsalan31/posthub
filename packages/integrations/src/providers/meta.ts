@@ -2,12 +2,19 @@
 import { Effect } from 'effect';
 import type { HttpBody } from 'effect/http';
 import { platformError } from '../errors';
+import {
+  createMetaEngagement,
+  FACEBOOK_COMMENT_SCOPES,
+  INSTAGRAM_COMMENT_SCOPES,
+} from './meta-engagement';
 import { fileBlob, form, get, multipart, post, type Http } from '../http';
 import {
   isImage,
   isVideo,
   withLink,
+  numbers,
   type ConnectedAccount,
+  type InsightsAdapter,
   type MediaFile,
   type OAuthProvider,
   type PlatformAdapter,
@@ -47,6 +54,12 @@ const SCOPES = [
   'business_management',
   'instagram_basic',
   'instagram_content_publish',
+  // Post and account numbers.
+  'read_insights',
+  'instagram_manage_insights',
+  // Comments.
+  ...FACEBOOK_COMMENT_SCOPES,
+  ...INSTAGRAM_COMMENT_SCOPES,
 ];
 
 interface PageResponse {
@@ -119,6 +132,14 @@ export function createMeta(config: MetaConfig, http: Http, options: MetaOptions 
           );
         }
 
+        // What the owner actually granted; unknown (undefined) if the lookup fails.
+        const grantedScopes = yield* graphGet<{
+          data: Array<{ permission: string; status: string }>;
+        }>('facebook', 'me/permissions', { access_token: long.access_token }).pipe(
+          Effect.map((r) => r.data.filter((p) => p.status === 'granted').map((p) => p.permission)),
+          Effect.catchCause(() => Effect.succeed(undefined)),
+        );
+
         const accounts: ConnectedAccount[] = [];
         for (const page of pages.data) {
           accounts.push({
@@ -130,6 +151,7 @@ export function createMeta(config: MetaConfig, http: Http, options: MetaOptions 
               pageAccessToken: page.access_token,
             } satisfies FacebookPageCredentials,
             tokenExpiresAt: null,
+            grantedScopes,
           });
           const ig = page.instagram_business_account;
           if (ig) {
@@ -142,6 +164,7 @@ export function createMeta(config: MetaConfig, http: Http, options: MetaOptions 
                 accessToken: page.access_token,
               } satisfies InstagramCredentials,
               tokenExpiresAt: null,
+              grantedScopes,
             });
           }
         }
@@ -236,6 +259,7 @@ export function createMeta(config: MetaConfig, http: Http, options: MetaOptions 
 
   const instagram: PlatformAdapter<InstagramCredentials> = {
     platform: 'instagram',
+    needsPublicMedia: true,
 
     publish: ({ igUserId, accessToken }, input) =>
       Effect.gen(function* () {
@@ -293,5 +317,119 @@ export function createMeta(config: MetaConfig, http: Http, options: MetaOptions 
       }),
   };
 
-  return { provider, adapters: { facebook, instagram } };
+  /**
+   * Insight metrics by name, or an empty record. Meta renames and retires insight metrics between
+   * Graph versions, so a rejected metric must not lose the counts read from fields.
+   */
+  const insights = (source: string, id: string, metrics: string[], accessToken: string) =>
+    graphGet<{ data?: Array<{ name: string; values?: Array<{ value?: unknown }> }> }>(
+      source,
+      `${id}/insights`,
+      { metric: metrics.join(','), access_token: accessToken },
+    ).pipe(
+      Effect.map((r) =>
+        numbers(Object.fromEntries((r.data ?? []).map((m) => [m.name, m.values?.[0]?.value]))),
+      ),
+      Effect.catchTag('PlatformError', () => Effect.succeed({} as Record<string, number>)),
+    );
+
+  const facebookInsights: InsightsAdapter<FacebookPageCredentials> = {
+    platform: 'facebook',
+    scopes: ['read_insights'],
+
+    postMetrics: ({ pageAccessToken }, postId) =>
+      Effect.gen(function* () {
+        const found = yield* graphGet<{
+          shares?: { count?: number };
+          reactions?: { summary?: { total_count?: number } };
+          comments?: { summary?: { total_count?: number } };
+        }>('facebook', postId, {
+          fields:
+            'shares,reactions.summary(total_count).limit(0),comments.summary(total_count).limit(0)',
+          access_token: pageAccessToken,
+        });
+        const extra = yield* insights(
+          'facebook',
+          postId,
+          ['post_impressions_unique', 'post_clicks'],
+          pageAccessToken,
+        );
+        const raw = numbers({
+          reactions: found.reactions?.summary?.total_count,
+          comments: found.comments?.summary?.total_count,
+          // Facebook leaves `shares` out when there are none.
+          shares: found.shares?.count ?? 0,
+          ...extra,
+        });
+        return {
+          likes: raw.reactions,
+          comments: raw.comments,
+          shares: raw.shares,
+          reach: raw.post_impressions_unique,
+          clicks: raw.post_clicks,
+          raw,
+        };
+      }),
+
+    accountMetrics: ({ pageId, pageAccessToken }) =>
+      Effect.map(
+        graphGet<{ followers_count?: number; fan_count?: number }>('facebook', pageId, {
+          fields: 'followers_count,fan_count',
+          access_token: pageAccessToken,
+        }),
+        (page) => {
+          const raw = numbers(page);
+          return { followers: raw.followers_count ?? raw.fan_count, raw };
+        },
+      ),
+  };
+
+  const instagramInsights: InsightsAdapter<InstagramCredentials> = {
+    platform: 'instagram',
+    scopes: ['instagram_manage_insights'],
+
+    postMetrics: ({ accessToken }, mediaId) =>
+      Effect.gen(function* () {
+        const media = yield* graphGet<{ like_count?: number; comments_count?: number }>(
+          'instagram',
+          mediaId,
+          { fields: 'like_count,comments_count', access_token: accessToken },
+        );
+        const extra = yield* insights(
+          'instagram',
+          mediaId,
+          ['reach', 'saved', 'shares', 'views'],
+          accessToken,
+        );
+        const raw = numbers({ ...media, ...extra });
+        return {
+          likes: raw.like_count,
+          comments: raw.comments_count,
+          reach: raw.reach,
+          saves: raw.saved,
+          shares: raw.shares,
+          views: raw.views,
+          raw,
+        };
+      }),
+
+    accountMetrics: ({ igUserId, accessToken }) =>
+      Effect.map(
+        graphGet<{ followers_count?: number; media_count?: number }>('instagram', igUserId, {
+          fields: 'followers_count,media_count',
+          access_token: accessToken,
+        }),
+        (account) => {
+          const raw = numbers(account);
+          return { followers: raw.followers_count, raw };
+        },
+      ),
+  };
+
+  return {
+    provider,
+    adapters: { facebook, instagram },
+    insights: { facebook: facebookInsights, instagram: instagramInsights },
+    engagement: createMetaEngagement(graph, http),
+  };
 }

@@ -18,6 +18,7 @@ const publicColumns = {
   status: socialAccount.status,
   tokenExpiresAt: socialAccount.tokenExpiresAt,
   createdAt: socialAccount.createdAt,
+  grantedScopes: socialAccount.grantedScopes,
 };
 
 export const AccountsHandlers = HttpApiBuilder.group(Api, 'accounts', (handlers) =>
@@ -29,16 +30,33 @@ export const AccountsHandlers = HttpApiBuilder.group(Api, 'accounts', (handlers)
 
     return handlers.handleAll({
       list: () =>
-        Effect.flatMap(CurrentUser, (user) =>
-          query((db): Account[] =>
+        Effect.gen(function* () {
+          const user = yield* CurrentUser;
+          const integrations = yield* providerApps.current;
+          const rows = yield* query((db) =>
             db
               .select(publicColumns)
               .from(socialAccount)
               .where(eq(socialAccount.userId, user.id))
               .orderBy(asc(socialAccount.platform), asc(socialAccount.displayName))
               .all(),
-          ),
-        ),
+          );
+          return rows.map(({ grantedScopes, ...account }): Account => {
+            // Accounts connected before scopes were recorded may lack them: suggest a reconnect.
+            const lacks = (scopes: readonly string[] = []) =>
+              scopes.some((scope) => !grantedScopes?.includes(scope));
+            const engagement = integrations.engagement(account.platform);
+            const reconnectFor: Account['reconnectFor'] = [];
+            if (lacks(integrations.insights(account.platform)?.scopes))
+              reconnectFor.push('metrics');
+            if (lacks(engagement?.scopes)) reconnectFor.push('comments');
+            return {
+              ...account,
+              reconnectFor,
+              engagement: engagement ? { ...engagement.capabilities } : null,
+            };
+          });
+        }),
 
       /** Connectable providers, whether they are set up, and where their app credentials come from. */
       providers: () =>

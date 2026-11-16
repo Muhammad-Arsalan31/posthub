@@ -2,7 +2,8 @@ import { NodeHttpServer } from '@effect/platform-node';
 import { apiLayer, Sessions } from '@posthub/api';
 import { fetchApiClient, type PromiseClient } from '@posthub/contract';
 import { createAuth } from '@posthub/auth';
-import { createTestDb } from '@posthub/db/testing';
+import { post, postMetricSnapshot, postTarget, socialAccount, user } from '@posthub/db';
+import { createTestDb, seedUser } from '@posthub/db/testing';
 import { createFakeFetch } from '@posthub/integrations/testing';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -62,7 +63,7 @@ function setup() {
       },
     });
 
-  return { app, rpc };
+  return { app, rpc, db };
 }
 
 async function signUp(app: ReturnType<typeof setup>['app']) {
@@ -195,5 +196,69 @@ describe('connect routes', () => {
     const consent = new URL(after.headers.get('location')!);
     expect(consent.origin).toBe('https://www.linkedin.com');
     expect(consent.searchParams.get('client_id')).toBe('li-id');
+  });
+});
+
+describe('analytics export', () => {
+  const range = '?from=2030-01-01T00:00:00Z&to=2030-01-31T23:59:59Z';
+
+  it('needs a session and a valid range', async () => {
+    const { app } = setup();
+    expect((await app.request(`/analytics/export.csv${range}`)).status).toBe(401);
+    const cookie = await signUp(app);
+    const bad = await app.request('/analytics/export.csv?from=soon', { headers: { cookie } });
+    expect(bad.status).toBe(400);
+  });
+
+  it("exports the owner's numbers, never another user's", async () => {
+    const { app, db } = setup();
+    const cookie = await signUp(app);
+    const me = db.select().from(user).get()!;
+    const other = seedUser(db);
+    for (const [owner, title] of [
+      [me.id, 'Mine, "quoted"'],
+      [other.id, 'Theirs'],
+    ] as const) {
+      const accountId = crypto.randomUUID();
+      db.insert(socialAccount)
+        .values({
+          id: accountId,
+          userId: owner,
+          platform: 'youtube',
+          externalId: accountId,
+          displayName: 'C',
+        })
+        .run();
+      const postId = crypto.randomUUID();
+      db.insert(post).values({ id: postId, userId: owner, title, status: 'published' }).run();
+      const targetId = crypto.randomUUID();
+      db.insert(postTarget)
+        .values({
+          id: targetId,
+          postId,
+          socialAccountId: accountId,
+          status: 'published',
+          publishedAt: new Date('2030-01-10T09:00:00Z'),
+        })
+        .run();
+      db.insert(postMetricSnapshot)
+        .values({
+          id: crypto.randomUUID(),
+          postTargetId: targetId,
+          capturedAt: new Date('2030-01-11T09:00:00Z'),
+          views: 42,
+          likes: 3,
+        })
+        .run();
+    }
+
+    const res = await app.request(`/analytics/export.csv${range}`, { headers: { cookie } });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/csv');
+    const lines = (await res.text()).trim().split('\r\n');
+    expect(lines).toEqual([
+      'post,platform,published_at,views,reach,likes,comments,shares,saves,clicks,engagement',
+      '"Mine, ""quoted""",youtube,2030-01-10T09:00:00.000Z,42,,3,,,,,3',
+    ]);
   });
 });
