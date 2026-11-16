@@ -70,7 +70,9 @@ function PostsPage() {
   const counts = new Map<string, number>();
   for (const post of posts) counts.set(post.status, (counts.get(post.status) ?? 0) + 1);
   const visible = filter === 'all' ? posts : posts.filter((p) => p.status === filter);
-  const toPin = posts.filter((p) => p.targets.some((t) => needsPin(p, t)));
+  const toPin = posts.filter((p) =>
+    p.targets.some((t) => needsPin(p, t, accountsById.get(t.socialAccountId)?.platform)),
+  );
 
   function duplicate(post: Post) {
     const now = new Date();

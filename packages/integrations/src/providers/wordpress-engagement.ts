@@ -34,7 +34,7 @@ export function createWordPressEngagement(http: Http): EngagementAdapter<WordPre
       (r) => r.data.id,
     );
 
-  const toComment = (c: WordPressComment, userId: number | null): RemoteComment => ({
+  const toComment = (c: WordPressComment, userId: number): RemoteComment => ({
     externalId: String(c.id),
     parentExternalId: c.parent ? String(c.parent) : null,
     authorName: c.author_name || 'Visitor',
@@ -45,7 +45,7 @@ export function createWordPressEngagement(http: Http): EngagementAdapter<WordPre
     likedByMe: false,
     // date_gmt has no zone designator.
     createdAt: new Date(`${c.date_gmt}Z`),
-    isOwn: userId !== null && c.author === userId,
+    isOwn: c.author === userId,
     hidden: c.status === 'hold' || c.status === 'unapproved',
   });
 
@@ -57,7 +57,8 @@ export function createWordPressEngagement(http: Http): EngagementAdapter<WordPre
 
     listComments: (credentials, { externalPostId }, cursor) =>
       Effect.gen(function* () {
-        const userId = yield* me(credentials).pipe(Effect.orElseSucceed(() => null));
+        // Recovery relies on identifying our own comments. An unknown identity cannot prove absence.
+        const userId = yield* me(credentials);
         const page = Number(cursor ?? '1');
         const { data, response } = yield* call<WordPressComment[]>(
           get(

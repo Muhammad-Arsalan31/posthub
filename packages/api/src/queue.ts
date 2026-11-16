@@ -67,8 +67,10 @@ export function zonedTime(
   timeZone: string,
 ) {
   const guess = Date.UTC(date.year, date.month - 1, date.day, 0, minuteOfDay);
-  const before = offsetAt(guess - 86_400_000 / 2, timeZone);
-  const after = offsetAt(guess + 86_400_000 / 2, timeZone);
+  // The UTC guess can be more than 12 hours from the local instant near the date line.
+  // Probe far enough on both sides to include the offsets before and after its transition.
+  const before = offsetAt(guess - 2 * 86_400_000, timeZone);
+  const after = offsetAt(guess + 2 * 86_400_000, timeZone);
   // Earliest candidate first, so a repeated time resolves to its first occurrence.
   const candidates = [guess - Math.max(before, after), guess - Math.min(before, after)];
   for (const candidate of candidates) {

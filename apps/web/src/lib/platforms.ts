@@ -99,6 +99,9 @@ export const FIRST_COMMENT_PLATFORMS: Platform[] = [
   'wordpress',
 ];
 
+/** Platforms where an automatically posted first comment can be pinned by the owner. */
+export const PIN_COMMENT_PLATFORMS: Platform[] = ['youtube', 'facebook', 'instagram'];
+
 /** How each platform handles pinning, for the composer and the post page. */
 export const PIN_NOTES: Record<Platform, string> = {
   youtube: 'Pin it in YouTube Studio: Comments, then ⋮ next to the comment, then Pin.',

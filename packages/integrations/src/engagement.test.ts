@@ -18,6 +18,127 @@ const build = (routes: Parameters<typeof createFakeFetch>[0]) => {
 const ref = { externalId: 'c2', threadExternalId: 'c1', postExternalId: '7' };
 
 describe('engagement', () => {
+  it.effect('Instagram reads all nested reply pages before returning the top-level cursor', () =>
+    Effect.gen(function* () {
+      const resource = (id: string) => ({
+        id,
+        text: id,
+        timestamp: '2030-01-01T10:00:00Z',
+        from: { id: 'ig1' },
+      });
+      const { fake, integrations } = build([
+        [
+          `GET ${GRAPH}/media/comments`,
+          () => ({
+            data: [
+              {
+                ...resource('root'),
+                replies: {
+                  data: [resource('r1')],
+                  paging: {
+                    cursors: { after: 'reply2' },
+                    next: `${GRAPH}/root/replies?after=reply2`,
+                  },
+                },
+              },
+            ],
+            paging: { cursors: { after: 'top2' }, next: `${GRAPH}/media/comments?after=top2` },
+          }),
+        ],
+        [
+          `GET ${GRAPH}/root/replies`,
+          (req) =>
+            new URL(req.url).searchParams.get('after') === 'reply2'
+              ? {
+                  data: [resource('r2')],
+                  paging: {
+                    cursors: { after: 'reply3' },
+                    next: `${GRAPH}/root/replies?after=reply3`,
+                  },
+                }
+              : { data: [resource('r3')] },
+        ],
+      ]);
+      const page = yield* integrations
+        .engagement('instagram')!
+        .listComments(
+          { igUserId: 'ig1', accessToken: 't' },
+          { externalPostId: 'media', accountExternalId: 'ig1' },
+        );
+      expect(page.comments.map((c) => [c.externalId, c.parentExternalId, c.isOwn])).toEqual([
+        ['root', null, true],
+        ['r1', 'root', true],
+        ['r2', 'root', true],
+        ['r3', 'root', true],
+      ]);
+      expect(page.next).toBe('top2');
+      expect(fake.calls.slice(1).map((c) => new URL(c.url).searchParams.get('after'))).toEqual([
+        'reply2',
+        'reply3',
+      ]);
+    }),
+  );
+
+  it.effect('Instagram fails the read if a nested reply page cannot be fetched', () =>
+    Effect.gen(function* () {
+      const { integrations } = build([
+        [
+          `GET ${GRAPH}/media/comments`,
+          () => ({
+            data: [
+              {
+                id: 'root',
+                timestamp: '2030-01-01T10:00:00Z',
+                replies: {
+                  data: [],
+                  paging: {
+                    cursors: { after: 'reply2' },
+                    next: `${GRAPH}/root/replies?after=reply2`,
+                  },
+                },
+              },
+            ],
+          }),
+        ],
+        [
+          `GET ${GRAPH}/root/replies`,
+          () => Response.json({ error: { message: 'Try later' } }, { status: 503 }),
+        ],
+      ]);
+      const error = yield* Effect.flip(
+        integrations
+          .engagement('instagram')!
+          .listComments(
+            { igUserId: 'ig1', accessToken: 't' },
+            { externalPostId: 'media', accountExternalId: 'ig1' },
+          ),
+      );
+      expect(error).toMatchObject({ _tag: 'PlatformError', retryable: true });
+    }),
+  );
+
+  it.effect('WordPress refuses an unidentified comment read when the identity lookup fails', () =>
+    Effect.gen(function* () {
+      const { fake, integrations } = build([
+        [
+          `GET ${WP}/wp/v2/users/me`,
+          () => Response.json({ message: 'Try later' }, { status: 503 }),
+        ],
+        [`GET ${WP}/wp/v2/comments`, () => []],
+      ]);
+      const error = yield* Effect.flip(
+        integrations
+          .engagement('wordpress')!
+          .listComments(
+            { siteUrl: 'https://blog.test', apiBase: WP, username: 'me', appPassword: 'p' },
+            { externalPostId: '7', accountExternalId: 'x' },
+          ),
+      );
+      expect(error).toMatchObject({ _tag: 'PlatformError', retryable: true });
+      expect(fake.calls).toHaveLength(1);
+    }),
+  );
+
   it.effect('YouTube fetches every page of replies when the embedded replies are incomplete', () =>
     Effect.gen(function* () {
       const resource = (id: string, parentId?: string) => ({

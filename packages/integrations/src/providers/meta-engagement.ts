@@ -199,8 +199,8 @@ export function createMetaEngagement(graph: string, http: Http) {
     replyParentId: (ref) => ref.threadExternalId,
 
     listComments: ({ igUserId, accessToken }, { externalPostId }, cursor) =>
-      Effect.map(
-        call<Page<InstagramComment & { replies?: Page<InstagramComment> }>>(
+      Effect.gen(function* () {
+        const page = yield* call<Page<InstagramComment & { replies?: Page<InstagramComment> }>>(
           'instagram',
           get(
             `${graph}/${externalPostId}/comments?${query({
@@ -210,15 +210,37 @@ export function createMetaEngagement(graph: string, http: Http) {
               access_token: accessToken,
             })}`,
           ),
-        ),
-        (page) => ({
-          comments: (page.data ?? []).flatMap((c) => [
-            instagramComment(c, igUserId, null),
-            ...(c.replies?.data ?? []).map((r) => instagramComment(r, igUserId, c.id)),
-          ]),
-          next: nextCursor(page),
-        }),
-      ),
+        );
+        const comments: RemoteComment[] = [];
+        for (const c of page.data ?? []) {
+          comments.push(instagramComment(c, igUserId, null));
+          let replies = c.replies;
+          while (replies) {
+            comments.push(...(replies.data ?? []).map((r) => instagramComment(r, igUserId, c.id)));
+            if (!replies.paging?.next) break;
+            const after =
+              nextCursor(replies) ?? new URL(replies.paging.next).searchParams.get('after');
+            if (!after)
+              return yield* platformError(
+                'instagram',
+                'Could not continue reading comment replies.',
+                { retryable: true },
+              );
+            replies = yield* call<Page<InstagramComment>>(
+              'instagram',
+              get(
+                `${graph}/${c.id}/replies?${query({
+                  fields: IG_FIELDS,
+                  limit: '50',
+                  after,
+                  access_token: accessToken,
+                })}`,
+              ),
+            );
+          }
+        }
+        return { comments, next: nextCursor(page) };
+      }),
 
     reply: ({ igUserId, accessToken }, ref, text) =>
       Effect.gen(function* () {

@@ -6,6 +6,7 @@ import { postsCollection, type Post, type PostTarget } from '../collections/post
 import { api } from '../lib/api';
 import {
   FIRST_COMMENT_PLATFORMS,
+  PIN_COMMENT_PLATFORMS,
   PIN_NOTES,
   PLATFORM_LABELS,
   type Platform,
@@ -21,6 +22,8 @@ export function FirstCommentField(props: {
 }) {
   const hasText = Boolean(props.value.trim());
   const skipped = props.platforms.filter((p) => !FIRST_COMMENT_PLATFORMS.includes(p));
+  const canPin = props.platforms.some((p) => PIN_COMMENT_PLATFORMS.includes(p));
+  const pinNotes = props.platforms.filter((p) => props.pin || !PIN_COMMENT_PLATFORMS.includes(p));
   return (
     <Stack gap={6}>
       <Textarea
@@ -38,7 +41,7 @@ export function FirstCommentField(props: {
           Not posted on {skipped.map((p) => PLATFORM_LABELS[p]).join(', ')}.
         </Text>
       )}
-      {hasText && (
+      {hasText && canPin && (
         <Switch
           label="Remind me to pin it"
           description="No platform lets apps pin comments, so PostHub links you to the post to pin it there."
@@ -46,9 +49,9 @@ export function FirstCommentField(props: {
           onChange={(e) => props.onPinChange(e.currentTarget.checked)}
         />
       )}
-      {hasText && props.pin && (
+      {hasText && pinNotes.length > 0 && (
         <Stack gap={2}>
-          {props.platforms.map((platform) => (
+          {pinNotes.map((platform) => (
             <Text key={platform} size="xs" c="dimmed">
               {PLATFORM_LABELS[platform]}: {PIN_NOTES[platform]}
             </Text>
@@ -68,8 +71,14 @@ const STATUS_TEXT: Record<PostTarget['firstCommentStatus'], string> = {
 };
 
 /** Pinning needs the owner to be in a comment's platform. */
-export const needsPin = (post: Post, target: PostTarget) =>
-  post.pinFirstComment && target.firstCommentStatus === 'posted' && !target.pinnedAt;
+export const needsPin = (post: Post, target: PostTarget, platform: Platform | undefined) =>
+  Boolean(
+    platform &&
+    PIN_COMMENT_PLATFORMS.includes(platform) &&
+    post.pinFirstComment &&
+    target.firstCommentStatus === 'posted' &&
+    !target.pinnedAt,
+  );
 
 /** The first comment on each account, with the pin handoff. */
 export function FirstCommentStatus(props: { post: Post; accounts: Account[] }) {
@@ -95,6 +104,7 @@ export function FirstCommentStatus(props: { post: Post; accounts: Account[] }) {
         {targets.map((target) => {
           const account = accountsById.get(target.socialAccountId);
           const platform = account?.platform;
+          const canPin = platform !== undefined && PIN_COMMENT_PLATFORMS.includes(platform);
           return (
             <Stack key={target.id} gap={4}>
               <Group gap="xs">
@@ -114,7 +124,7 @@ export function FirstCommentStatus(props: { post: Post; accounts: Account[] }) {
                 >
                   {STATUS_TEXT[target.firstCommentStatus]}
                 </Badge>
-                {target.pinnedAt && (
+                {canPin && target.pinnedAt && (
                   <Badge size="xs" variant="light" color="grape">
                     Pinned
                   </Badge>
@@ -136,36 +146,39 @@ export function FirstCommentStatus(props: { post: Post; accounts: Account[] }) {
                   Retry the comment
                 </Button>
               )}
-              {props.post.pinFirstComment && target.firstCommentStatus === 'posted' && platform && (
-                <Group gap="xs">
-                  {!target.pinnedAt && target.externalUrl && (
+              {props.post.pinFirstComment &&
+                target.firstCommentStatus === 'posted' &&
+                platform &&
+                canPin && (
+                  <Group gap="xs">
+                    {!target.pinnedAt && target.externalUrl && (
+                      <Button
+                        size="compact-xs"
+                        component="a"
+                        href={target.externalUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Pin it on {PLATFORM_LABELS[platform]}
+                      </Button>
+                    )}
                     <Button
                       size="compact-xs"
-                      component="a"
-                      href={target.externalUrl}
-                      target="_blank"
-                      rel="noreferrer"
+                      variant="default"
+                      loading={markPinned.isPending}
+                      onClick={() =>
+                        markPinned.mutate({ targetId: target.id, pinned: !target.pinnedAt })
+                      }
                     >
-                      Pin it on {PLATFORM_LABELS[platform]}
+                      {target.pinnedAt ? 'Not pinned after all' : 'Mark as pinned'}
                     </Button>
-                  )}
-                  <Button
-                    size="compact-xs"
-                    variant="default"
-                    loading={markPinned.isPending}
-                    onClick={() =>
-                      markPinned.mutate({ targetId: target.id, pinned: !target.pinnedAt })
-                    }
-                  >
-                    {target.pinnedAt ? 'Not pinned after all' : 'Mark as pinned'}
-                  </Button>
-                  {!target.pinnedAt && (
-                    <Text size="xs" c="dimmed">
-                      {PIN_NOTES[platform]}
-                    </Text>
-                  )}
-                </Group>
-              )}
+                    {!target.pinnedAt && (
+                      <Text size="xs" c="dimmed">
+                        {PIN_NOTES[platform]}
+                      </Text>
+                    )}
+                  </Group>
+                )}
             </Stack>
           );
         })}

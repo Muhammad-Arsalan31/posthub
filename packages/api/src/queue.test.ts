@@ -8,6 +8,18 @@ const MONDAY_9 = { weekday: 1, minuteOfDay: 9 * 60 };
 const WEDNESDAY_1730 = { weekday: 3, minuteOfDay: 17 * 60 + 30 };
 
 describe('nextSlotTime', () => {
+  it.each([
+    [{ year: 2030, month: 9, day: 29 }, 150, 'Pacific/Auckland', '2030-09-28T14:30:00.000Z'],
+    [{ year: 2030, month: 4, day: 7 }, 150, 'Pacific/Auckland', '2030-04-06T13:30:00.000Z'],
+    [{ year: 2030, month: 10, day: 6 }, 135, 'Australia/Lord_Howe', '2030-10-05T15:45:00.000Z'],
+    [{ year: 2030, month: 4, day: 7 }, 105, 'Australia/Lord_Howe', '2030-04-06T14:45:00.000Z'],
+  ] as const)(
+    'resolves DST gaps and overlaps near the date line: %j %i %s',
+    (date, minute, zone, expected) => {
+      expect(iso(zonedTime(date, minute, zone))).toBe(expected);
+    },
+  );
+
   it('finds the next slot after now in the owner time zone', () => {
     const now = at('2030-01-07T07:00:00Z'); // 08:00 in Berlin, Monday
     expect(iso(nextSlotTime([MONDAY_9, WEDNESDAY_1730], [], now, 'Europe/Berlin'))).toBe(

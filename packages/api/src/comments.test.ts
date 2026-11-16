@@ -51,7 +51,9 @@ const wp = (id: number, text: string, extra: Partial<WpComment> = {}): WpComment
 
 type Responder = (req: RecordedRequest) => unknown;
 
-const setup = Effect.fnUntraced(function* (options: { reply?: Responder; pages?: number } = {}) {
+const setup = Effect.fnUntraced(function* (
+  options: { reply?: Responder; pages?: number; me?: Responder } = {},
+) {
   yield* TestClock.setTime(START);
   const db = createTestDb();
   const user = seedUser(db);
@@ -60,7 +62,7 @@ const setup = Effect.fnUntraced(function* (options: { reply?: Responder; pages?:
     comments: [wp(1, 'Great post'), wp(2, 'Thanks!', { parent: 1, author: 5 })],
   };
   const fake = createFakeFetch([
-    [`GET ${WP}/wp/v2/users/me`, () => ({ id: 5 })],
+    [`GET ${WP}/wp/v2/users/me`, options.me ?? (() => ({ id: 5 }))],
     [
       `GET ${WP}/wp/v2/comments`,
       (req) => {
@@ -218,6 +220,32 @@ describe('comment counts', () => {
 });
 
 describe('outbox', () => {
+  it.effect('waits for WordPress identity before retrying an uncertain reply', () =>
+    Effect.gen(function* () {
+      let unavailable = false;
+      const env = yield* setup({
+        me: () =>
+          unavailable ? Response.json({ message: 'Try later' }, { status: 503 }) : { id: 5 },
+      });
+      yield* env.sync.tick;
+      const reply = env.act('1', 'reply', 'Thanks!');
+      env.db
+        .update(commentAction)
+        .set({ checkFirst: true })
+        .where(eq(commentAction.id, reply.id))
+        .run();
+      unavailable = true;
+      yield* env.sync.tick;
+      expect(env.replies()).toHaveLength(0);
+      expect(env.action(reply.id)).toMatchObject({ status: 'pending', checkFirst: true });
+      unavailable = false;
+      yield* TestClock.adjust(60_000);
+      yield* env.sync.tick;
+      expect(env.action(reply.id).status).toBe('done');
+      expect(env.replies()).toHaveLength(0);
+    }),
+  );
+
   it.effect('does not mistake an identical reply in another conversation for this reply', () =>
     Effect.gen(function* () {
       const env = yield* setup();
