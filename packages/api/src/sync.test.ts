@@ -248,6 +248,31 @@ describe('sync worker', () => {
     }),
   );
 
+  it.effect('adds missing jobs for posts published before they existed', () =>
+    Effect.gen(function* () {
+      const { db, sync, addAccount, published } = yield* setup();
+      const target = published(addAccount('wordpress', wordpress).id);
+      // As if published by an older version: no jobs at all.
+      db.delete(syncJob).run();
+
+      yield* sync.recover;
+      expect(
+        db
+          .select({ kind: syncJob.kind, status: syncJob.status })
+          .from(syncJob)
+          .where(eq(syncJob.subjectId, target.id))
+          .all(),
+      ).toEqual([
+        { kind: 'post_metrics', status: 'pending' },
+        { kind: 'comments', status: 'pending' },
+      ]);
+
+      // Running it again changes nothing.
+      yield* sync.recover;
+      expect(db.select().from(syncJob).all()).toHaveLength(3);
+    }),
+  );
+
   it.effect('recovers interrupted jobs and adds account jobs at startup', () =>
     Effect.gen(function* () {
       const { db, sync, addAccount, published } = yield* setup([

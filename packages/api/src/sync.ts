@@ -125,6 +125,23 @@ export const makeSync = Effect.fnUntraced(function* ({
             nextRunAt: new Date(now),
           });
         }
+        // Targets published before these jobs existed (or by an older version) get them now.
+        // Jobs that already exist are left alone; old posts finish after one read.
+        const published = db
+          .select({ id: postTarget.id, socialAccountId: postTarget.socialAccountId })
+          .from(postTarget)
+          .where(and(eq(postTarget.status, 'published'), isNotNull(postTarget.externalPostId)))
+          .all();
+        for (const target of published) {
+          for (const kind of ['post_metrics', 'comments'] as const) {
+            insertSyncJob(db, {
+              kind,
+              subjectId: target.id,
+              socialAccountId: target.socialAccountId,
+              nextRunAt: new Date(now),
+            });
+          }
+        }
         return reset;
       }),
     ),
@@ -296,33 +313,8 @@ export const makeSync = Effect.fnUntraced(function* ({
 
   const claimJobs = Effect.gen(function* () {
     const at = new Date(yield* Clock.currentTimeMillis);
-    // Calls per platform in this pass (the quota guard).
-    const used = new Map<Platform, number>();
     const started: Array<Fiber.Fiber<void>> = [];
-    while ((yield* FiberSet.size(jobs)) < concurrency) {
-      const exclude = [...used].filter(([, n]) => n >= perPlatformPerPass).map(([p]) => p);
-      const fiber = yield* Effect.uninterruptible(
-        Effect.flatMap(
-          database.transaction(database.use((db) => claimNext(db, at, exclude))),
-          (job) => {
-            if (!job) return Effect.succeedNone;
-            used.set(job.platform, (used.get(job.platform) ?? 0) + 1);
-            return Effect.asSome(
-              FiberSet.run(
-                jobs,
-                runJob(job).pipe(
-                  // If even recording fails, the job stays `running` and recover resets it.
-                  Effect.catchCause((cause) => Effect.logError(`[sync] ${job.id}`, cause)),
-                ),
-              ),
-            );
-          },
-        ),
-      );
-      if (Option.isNone(fiber)) break;
-      started.push(fiber.value);
-    }
-    // Then the outbox and first comments, with whatever room is left.
+    // Writes the owner asked for (replies, moderation, first comments) go first.
     const queues = [
       {
         label: '[inbox]',
@@ -358,6 +350,31 @@ export const makeSync = Effect.fnUntraced(function* ({
         if (Option.isNone(fiber)) break;
         started.push(fiber.value);
       }
+    }
+    // Then reads, with whatever room is left. Calls per platform in this pass (the quota guard):
+    const used = new Map<Platform, number>();
+    while ((yield* FiberSet.size(jobs)) < concurrency) {
+      const exclude = [...used].filter(([, n]) => n >= perPlatformPerPass).map(([p]) => p);
+      const fiber = yield* Effect.uninterruptible(
+        Effect.flatMap(
+          database.transaction(database.use((db) => claimNext(db, at, exclude))),
+          (job) => {
+            if (!job) return Effect.succeedNone;
+            used.set(job.platform, (used.get(job.platform) ?? 0) + 1);
+            return Effect.asSome(
+              FiberSet.run(
+                jobs,
+                runJob(job).pipe(
+                  // If even recording fails, the job stays `running` and recover resets it.
+                  Effect.catchCause((cause) => Effect.logError(`[sync] ${job.id}`, cause)),
+                ),
+              ),
+            );
+          },
+        ),
+      );
+      if (Option.isNone(fiber)) break;
+      started.push(fiber.value);
     }
     return started;
   });
