@@ -42,10 +42,14 @@ import { makeCredentialAccess } from './accounts';
 import { inlineMediaIds, inlineRef } from './inline-media';
 import { MediaHosts } from './media-hosts';
 import { ProviderApps } from './provider-apps';
+import { insertSyncJob } from './sync';
 import { Database, type DatabaseError, MediaDir } from './services';
 
 /** Waits before retry 1, 2 and 3 of a retryable failure (429, 5xx, still processing). */
 export const RETRY_DELAYS_MS = [60_000, 5 * 60_000, 15 * 60_000];
+
+/** First metrics read after publishing: soon enough to show early numbers. */
+const FIRST_METRICS_DELAY_MS = 15 * 60_000;
 
 export const INTERRUPTED_MESSAGE =
   'PostHub stopped while this was publishing. Check the platform to see whether it went out, then retry if it did not.';
@@ -201,6 +205,15 @@ export const makePublisher = Effect.fnUntraced(function* ({ concurrency = 2 }: P
           .where(eq(postTarget.id, target.id))
           .run();
         refreshPostStatus(db, target.postId);
+        if (changes.status === 'published' && changes.externalPostId && changes.publishedAt) {
+          // Start reading its numbers soon; the sync worker reschedules by age after that.
+          insertSyncJob(db, {
+            kind: 'post_metrics',
+            subjectId: target.id,
+            socialAccountId: target.socialAccountId,
+            nextRunAt: new Date(changes.publishedAt.getTime() + FIRST_METRICS_DELAY_MS),
+          });
+        }
       }),
     );
 

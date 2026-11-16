@@ -4,7 +4,9 @@ import { platformError, reason, PlatformError } from '../errors';
 import { bearer, fileBody, form, get, json, post, put, type Http } from '../http';
 import {
   isVideo,
+  numbers,
   type ConnectedAccount,
+  type InsightsAdapter,
   type OAuthProvider,
   type PlatformAdapter,
   type PublishResult,
@@ -38,6 +40,8 @@ interface TokenResponse {
   access_token: string;
   expires_in: number;
   refresh_token?: string;
+  /** Space-separated scopes actually granted. */
+  scope?: string;
 }
 
 /** Why an optional step failed, in words for the owner. */
@@ -103,6 +107,7 @@ export function createGoogle(config: GoogleConfig, http: Http) {
           displayName: channel.snippet.title,
           credentials: { accessToken: tokens.access_token, refreshToken, expiresAt },
           tokenExpiresAt: new Date(expiresAt),
+          grantedScopes: tokens.scope?.split(' ').filter(Boolean),
         }));
       }),
   };
@@ -204,5 +209,55 @@ export function createGoogle(config: GoogleConfig, http: Http) {
       }),
   };
 
-  return { provider, adapters: { youtube } };
+  interface Statistics {
+    viewCount?: string;
+    likeCount?: string;
+    commentCount?: string;
+    favoriteCount?: string;
+    subscriberCount?: string;
+    videoCount?: string;
+  }
+
+  const youtubeInsights: InsightsAdapter<YouTubeCredentials> = {
+    platform: 'youtube',
+    // youtube.readonly (requested since the first version) covers statistics.
+    scopes: [],
+    refresh: (credentials) => youtube.refresh!(credentials),
+
+    postMetrics: (credentials, videoId) =>
+      Effect.gen(function* () {
+        const { data } = yield* http<{ items?: Array<{ statistics?: Statistics }> }>(
+          'youtube',
+          get(`${API}/videos?part=statistics&id=${encodeURIComponent(videoId)}`, {
+            headers: bearer(credentials.accessToken),
+          }),
+        );
+        const stats = data.items?.[0]?.statistics;
+        if (!stats) {
+          return yield* platformError(
+            'youtube',
+            'The video was not found. It may have been deleted.',
+            {
+              retryable: false,
+            },
+          );
+        }
+        const raw = numbers({ ...stats });
+        return { views: raw.viewCount, likes: raw.likeCount, comments: raw.commentCount, raw };
+      }),
+
+    accountMetrics: (credentials) =>
+      Effect.gen(function* () {
+        const { data } = yield* http<{ items?: Array<{ statistics?: Statistics }> }>(
+          'youtube',
+          get(`${API}/channels?part=statistics&mine=true`, {
+            headers: bearer(credentials.accessToken),
+          }),
+        );
+        const raw = numbers({ ...data.items?.[0]?.statistics });
+        return { followers: raw.subscriberCount, raw };
+      }),
+  };
+
+  return { provider, adapters: { youtube }, insights: { youtube: youtubeInsights } };
 }

@@ -23,6 +23,12 @@ export type Platform = (typeof PLATFORMS)[number];
 export const POST_STATUSES = ['draft', 'scheduled', 'publishing', 'published', 'failed'] as const;
 export type PostStatus = (typeof POST_STATUSES)[number];
 
+export const SYNC_JOB_KINDS = ['post_metrics', 'account_metrics'] as const;
+export type SyncJobKind = (typeof SYNC_JOB_KINDS)[number];
+
+/** `paused`: waiting for the owner to reconnect the account. `done`: nothing more to fetch. */
+export const SYNC_JOB_STATUSES = ['pending', 'running', 'paused', 'done'] as const;
+
 export const TARGET_STATUSES = ['pending', 'publishing', 'published', 'failed', 'manual'] as const;
 export type TargetStatus = (typeof TARGET_STATUSES)[number];
 
@@ -55,6 +61,8 @@ export const socialAccount = sqliteTable(
     displayName: text('display_name').notNull(),
     credentials: text('credentials'),
     tokenExpiresAt: integer('token_expires_at', { mode: 'timestamp_ms' }),
+    /** OAuth scopes granted at the last connect. Null for accounts connected before this was recorded. */
+    grantedScopes: text('granted_scopes', { mode: 'json' }).$type<string[]>(),
     status: text('status', { enum: ['active', 'expired', 'revoked'] })
       .notNull()
       .default('active'),
@@ -238,4 +246,73 @@ export const queueSlot = sqliteTable(
     createdAt: createdAt(),
   },
   (t) => [index('queue_slot_user_idx').on(t.userId)],
+);
+
+/**
+ * Background pulls (metrics, later comments). One row per (kind, subject), rescheduled after each
+ * run. Reads are safe to repeat, so a job interrupted while `running` simply runs again.
+ */
+export const syncJob = sqliteTable(
+  'sync_job',
+  {
+    id: text('id').primaryKey(),
+    kind: text('kind', { enum: SYNC_JOB_KINDS }).notNull(),
+    /** A post target id (post_metrics) or a social account id (account_metrics). */
+    subjectId: text('subject_id').notNull(),
+    socialAccountId: text('social_account_id')
+      .notNull()
+      .references(() => socialAccount.id, { onDelete: 'cascade' }),
+    status: text('status', { enum: SYNC_JOB_STATUSES }).notNull().default('pending'),
+    /** Failed runs in a row (reset on success). */
+    attempts: integer('attempts').notNull().default(0),
+    nextRunAt: integer('next_run_at', { mode: 'timestamp_ms' }),
+    lastRunAt: integer('last_run_at', { mode: 'timestamp_ms' }),
+    lastError: text('last_error'),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    uniqueIndex('sync_job_kind_subject_idx').on(t.kind, t.subjectId),
+    index('sync_job_due_idx').on(t.status, t.nextRunAt),
+  ],
+);
+
+/** Platform numbers for one published target at one moment. A null metric means "not available". */
+export const postMetricSnapshot = sqliteTable(
+  'post_metric_snapshot',
+  {
+    id: text('id').primaryKey(),
+    postTargetId: text('post_target_id')
+      .notNull()
+      .references(() => postTarget.id, { onDelete: 'cascade' }),
+    capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
+    /** `manual` when the owner typed the numbers in (TikTok). */
+    source: text('source', { enum: ['platform', 'manual'] })
+      .notNull()
+      .default('platform'),
+    views: integer('views'),
+    reach: integer('reach'),
+    likes: integer('likes'),
+    comments: integer('comments'),
+    shares: integer('shares'),
+    saves: integer('saves'),
+    clicks: integer('clicks'),
+    watchTimeSec: integer('watch_time_sec'),
+    raw: text('raw', { mode: 'json' }).$type<Record<string, number>>(),
+  },
+  (t) => [index('post_metric_target_time_idx').on(t.postTargetId, t.capturedAt)],
+);
+
+export const accountMetricSnapshot = sqliteTable(
+  'account_metric_snapshot',
+  {
+    id: text('id').primaryKey(),
+    socialAccountId: text('social_account_id')
+      .notNull()
+      .references(() => socialAccount.id, { onDelete: 'cascade' }),
+    capturedAt: integer('captured_at', { mode: 'timestamp_ms' }).notNull(),
+    followers: integer('followers'),
+    reach: integer('reach'),
+    raw: text('raw', { mode: 'json' }).$type<Record<string, number>>(),
+  },
+  (t) => [index('account_metric_account_time_idx').on(t.socialAccountId, t.capturedAt)],
 );

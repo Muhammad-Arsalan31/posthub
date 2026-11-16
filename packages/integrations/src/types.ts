@@ -49,6 +49,8 @@ export interface ConnectedAccount<C = unknown> {
   displayName: string;
   credentials: C;
   tokenExpiresAt: Date | null;
+  /** OAuth scopes granted, when the platform reports them. */
+  grantedScopes?: string[];
 }
 
 export interface RefreshResult<C> {
@@ -83,3 +85,45 @@ export const isVideo = (m: MediaFile) => m.mimeType.startsWith('video/');
 /** Append the link to the text for platforms without a separate link field. */
 export const withLink = (text: string, link?: string) =>
   link && !text.includes(link) ? `${text}\n\n${link}`.trim() : text;
+
+/** Numbers for one published post. A missing field means "not available", never zero. */
+export interface PostMetrics {
+  views?: number;
+  reach?: number;
+  likes?: number;
+  comments?: number;
+  shares?: number;
+  saves?: number;
+  clicks?: number;
+  watchTimeSec?: number;
+  /** Platform-specific extras, kept for later. */
+  raw: Record<string, number>;
+}
+
+export interface AccountMetrics {
+  followers?: number;
+  reach?: number;
+  raw: Record<string, number>;
+}
+
+/**
+ * Reads numbers from a platform. Reads are safe to repeat, so callers retry any failure
+ * (including network errors) later. `refresh` is the publish adapter's, when it has one.
+ */
+export interface InsightsAdapter<C> {
+  readonly platform: Platform;
+  /** OAuth scopes the reads need, beyond what publishing needs. */
+  readonly scopes: readonly string[];
+  postMetrics(credentials: C, externalPostId: string): Effect.Effect<PostMetrics, PublishError>;
+  accountMetrics?(credentials: C): Effect.Effect<AccountMetrics, PublishError>;
+  refresh?(credentials: C): Effect.Effect<RefreshResult<C>, PublishError>;
+}
+
+/** Drops undefined values and non-numbers, for `raw`. */
+export const numbers = (values: Record<string, unknown>): Record<string, number> =>
+  Object.fromEntries(
+    Object.entries(values).flatMap(([key, value]) => {
+      const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+      return typeof n === 'number' && Number.isFinite(n) ? [[key, n]] : [];
+    }),
+  );

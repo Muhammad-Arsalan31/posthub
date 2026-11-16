@@ -1,7 +1,15 @@
 import { existsSync, mkdirSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { NodeHttpServer, NodeRuntime } from '@effect/platform-node';
-import { apiLayer, ProviderApps, Publisher, publisherWorker, Sessions } from '@posthub/api';
+import {
+  apiLayer,
+  ProviderApps,
+  Publisher,
+  publisherWorker,
+  Sessions,
+  Sync,
+  syncWorker,
+} from '@posthub/api';
 import { createAuth } from '@posthub/auth';
 import { createDb, runMigrations } from '@posthub/db';
 import { Effect, Layer } from 'effect';
@@ -40,9 +48,10 @@ const server = HttpRouter.serve(
 ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port: env.port, host: '127.0.0.1' })));
 
 // The HTTP server, plus the publisher, which publishes due posts in the background whether or
-// not a browser is open. App credentials from the Accounts page (DB) override those from .env.
-const main = Layer.mergeAll(server, publisherWorker(), announce).pipe(
-  Layer.provide([Publisher.layer(), Sessions.layer(auth)]),
+// not a browser is open, and the sync worker, which reads post and account numbers.
+// App credentials from the Accounts page (DB) override those from .env.
+const main = Layer.mergeAll(server, publisherWorker(), syncWorker(), announce).pipe(
+  Layer.provide([Publisher.layer(), Sync.layer(), Sessions.layer(auth)]),
   Layer.provideMerge(
     apiLayer({
       db,

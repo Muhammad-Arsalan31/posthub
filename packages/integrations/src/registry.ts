@@ -4,6 +4,7 @@ import { createLinkedIn, type LinkedInConfig } from './providers/linkedin';
 import { createMeta, type MetaConfig } from './providers/meta';
 import { createWordPress } from './providers/wordpress';
 import type {
+  InsightsAdapter,
   OAuthProvider,
   OAuthProviderId,
   Platform,
@@ -74,17 +75,21 @@ export function createIntegrations(config: IntegrationsConfig, deps: Integration
   const http = makeHttp(fetchClient(deps.fetch ?? ((input, init) => fetch(input, init))));
   const providers = new Map<OAuthProviderId, OAuthProvider>();
   const adapters = new Map<Platform, PlatformAdapter<unknown>>();
+  const insights = new Map<Platform, InsightsAdapter<unknown>>();
 
   if (config.google) {
     const google = createGoogle(config.google, http);
     providers.set('google', google.provider);
     adapters.set('youtube', google.adapters.youtube);
+    insights.set('youtube', google.insights.youtube);
   }
   if (config.meta) {
     const meta = createMeta(config.meta, http, { pollIntervalMs: deps.pollIntervalMs });
     providers.set('meta', meta.provider);
     adapters.set('facebook', meta.adapters.facebook);
     adapters.set('instagram', meta.adapters.instagram);
+    insights.set('facebook', meta.insights.facebook);
+    insights.set('instagram', meta.insights.instagram);
   }
   if (config.linkedin) {
     const linkedin = createLinkedIn(config.linkedin, http);
@@ -93,10 +98,13 @@ export function createIntegrations(config: IntegrationsConfig, deps: Integration
   }
   const wordpress = createWordPress(http);
   adapters.set('wordpress', wordpress.adapter);
+  insights.set('wordpress', wordpress.insights);
 
   return {
     oauth: (id: string) => providers.get(id as OAuthProviderId),
     adapter: (platform: Platform) => adapters.get(platform),
+    /** Reads post and account numbers; undefined when the platform has no support (LinkedIn, TikTok). */
+    insights: (platform: Platform) => insights.get(platform),
     wordpress: { connect: wordpress.connect, categories: wordpress.categories },
     status: () =>
       PROVIDERS.map((p) => ({

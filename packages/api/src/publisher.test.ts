@@ -1,4 +1,4 @@
-import { post, postTarget, socialAccount, type Db } from '@posthub/db';
+import { post, postTarget, socialAccount, syncJob, type Db } from '@posthub/db';
 import { createTestDb, seedUser } from '@posthub/db/testing';
 import type { WordPressCredentials } from '@posthub/integrations';
 import { createFakeFetch } from '@posthub/integrations/testing';
@@ -117,6 +117,14 @@ describe('publisher', () => {
         lockedAt: null,
       });
       expect(state(db, later.id).post.status).toBe('scheduled');
+      // Its numbers are read 15 minutes after publishing.
+      expect(db.select().from(syncJob).all()).toMatchObject([
+        {
+          kind: 'post_metrics',
+          subjectId: state(db, due.id).target.id,
+          nextRunAt: new Date('2030-01-01T09:15:00Z'),
+        },
+      ]);
       expect(fake.calls.map((c) => `${c.method} ${c.url}`)).toEqual([
         `POST ${API}/wp/v2/media`,
         `POST ${API}/wp/v2/posts`,

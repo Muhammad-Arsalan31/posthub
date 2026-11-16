@@ -57,6 +57,13 @@
       "when": 1794830022536,
       "tag": "0007_wide_blindfold",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1794830861546,
+      "tag": "0008_petite_cassandra_nova",
+      "breakpoints": true
     }
   ]
 }
