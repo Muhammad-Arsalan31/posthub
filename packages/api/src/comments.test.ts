@@ -2,6 +2,7 @@ import {
   comment,
   commentAction,
   post,
+  postMetricSnapshot,
   postTarget,
   socialAccount,
   syncJob,
@@ -12,7 +13,7 @@ import { createTestDb, seedUser } from '@posthub/db/testing';
 import { createVault, type WordPressCredentials } from '@posthub/integrations';
 import { createFakeFetch, type RecordedRequest } from '@posthub/integrations/testing';
 import { describe, expect, it } from '@effect/vitest';
-import { eq } from 'drizzle-orm';
+import { asc, eq } from 'drizzle-orm';
 import { Context as Services, Effect, Layer } from 'effect';
 import { TestClock } from 'effect/testing';
 import { apiLayer } from './layer';
@@ -169,6 +170,41 @@ describe('comment sync', () => {
       const own = comments().find((c) => c.externalId === '2')!;
       expect(own.deletedAt).toEqual(new Date(START + 10 * 60_000));
       expect(comments()).toHaveLength(2);
+    }),
+  );
+});
+
+describe('comment counts', () => {
+  it.effect("keeps the post's comment count current, carrying its other numbers forward", () =>
+    Effect.gen(function* () {
+      const { db, sync, site, target } = yield* setup();
+      db.insert(postMetricSnapshot)
+        .values({
+          id: crypto.randomUUID(),
+          postTargetId: target.id,
+          capturedAt: new Date(START - 60_000),
+          views: 40,
+          comments: 0,
+        })
+        .run();
+
+      yield* sync.tick;
+      const snapshots = () =>
+        db
+          .select({ views: postMetricSnapshot.views, comments: postMetricSnapshot.comments })
+          .from(postMetricSnapshot)
+          .orderBy(asc(postMetricSnapshot.capturedAt))
+          .all();
+      expect(snapshots()).toEqual([
+        { views: 40, comments: 0 },
+        { views: 40, comments: 2 },
+      ]);
+
+      // Unchanged: no new snapshot. A held comment doesn't count.
+      site.comments.push(wp(3, 'Spam?', { status: 'hold' }));
+      yield* TestClock.adjust(10 * 60_000);
+      yield* sync.tick;
+      expect(snapshots()).toHaveLength(2);
     }),
   );
 });

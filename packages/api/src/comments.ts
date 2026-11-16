@@ -3,14 +3,22 @@
 // whose send may have reached the platform (network failure, or found `sending` at startup) is
 // only sent again after a fresh read of the post's comments shows it is not there.
 import { randomUUID } from 'node:crypto';
-import { comment, commentAction, post, postTarget, socialAccount, type Db } from '@posthub/db';
+import {
+  comment,
+  commentAction,
+  post,
+  postMetricSnapshot,
+  postTarget,
+  socialAccount,
+  type Db,
+} from '@posthub/db';
 import {
   PlatformError,
   type CommentRef,
   type EngagementAdapter,
   type RemoteComment,
 } from '@posthub/integrations';
-import { and, asc, eq, inArray, isNull, lte, notInArray, or } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lte, notInArray, or } from 'drizzle-orm';
 import { Cause, Clock, Effect } from 'effect';
 import type { CredentialAccess } from './accounts';
 import type { ProviderAppsService } from './provider-apps';
@@ -80,6 +88,53 @@ export function upsertComments(
   }
 }
 
+/**
+ * Stores a new numbers snapshot when a target's comment count changed, carrying its other numbers
+ * forward (snapshots are cumulative, so leaving them empty would read as "not available").
+ * Comments are read far more often than other numbers, so this keeps analytics current.
+ * Synchronous: call it inside a transaction.
+ */
+export function recordCommentCount(db: Db, targetId: string, count: number, now: Date) {
+  const latest = db
+    .select()
+    .from(postMetricSnapshot)
+    .where(eq(postMetricSnapshot.postTargetId, targetId))
+    .orderBy(desc(postMetricSnapshot.capturedAt))
+    .limit(1)
+    .get();
+  if (latest?.comments === count) return;
+  const {
+    id: _id,
+    capturedAt: _at,
+    source: _source,
+    ...carried
+  } = latest ?? {
+    id: '',
+    capturedAt: now,
+    source: 'platform' as const,
+    postTargetId: targetId,
+    views: null,
+    reach: null,
+    likes: null,
+    comments: null,
+    shares: null,
+    saves: null,
+    clicks: null,
+    watchTimeSec: null,
+    raw: {},
+  };
+  db.insert(postMetricSnapshot)
+    .values({
+      ...carried,
+      id: randomUUID(),
+      capturedAt: now,
+      source: 'platform',
+      comments: count,
+      raw: { ...carried.raw, comments: count },
+    })
+    .run();
+}
+
 type AnyEngagement = EngagementAdapter<unknown>;
 
 interface Deps {
@@ -143,12 +198,21 @@ export function makeCommentWork({ database, providerApps, credentialAccess }: De
   const store = (target: LoadedTarget, remote: RemoteComment[], full: boolean) =>
     Effect.flatMap(Clock.currentTimeMillis, (now) =>
       database.transaction(
-        database.use((db) =>
+        database.use((db) => {
           upsertComments(db, { id: target.id, userId: target.userId }, remote, {
             full,
             now: new Date(now),
-          }),
-        ),
+          });
+          // A complete read is an exact count: keep the post's numbers in step with the inbox.
+          if (full) {
+            recordCommentCount(
+              db,
+              target.id,
+              remote.filter((c) => !c.hidden).length,
+              new Date(now),
+            );
+          }
+        }),
       ),
     );
 

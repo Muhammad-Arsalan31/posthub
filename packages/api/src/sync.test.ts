@@ -290,7 +290,8 @@ describe('sync worker', () => {
       // WordPress has no account numbers in core: that job is done.
       expect(job(db, account.id).status).toBe('done');
       expect(db.select().from(accountMetricSnapshot).all()).toEqual([]);
-      expect(snapshots(db)).toHaveLength(1);
+      // The metrics read (and the backfilled comments read, which records its own count).
+      expect(snapshots(db).some((s) => s.comments === 4)).toBe(true);
     }),
   );
 });

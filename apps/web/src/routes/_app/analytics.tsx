@@ -62,12 +62,20 @@ function AnalyticsPage() {
   const groupBy = Number(days) > 60 ? 'week' : 'day';
 
   const accounts = useQuery(api.accounts.list.queryOptions());
-  const overview = useQuery(api.analytics.overview.queryOptions({ input: range }));
+  const overview = useQuery(
+    api.analytics.overview.queryOptions({ input: range, refetchInterval: 60_000 }),
+  );
   const series = useQuery(
-    api.analytics.timeseries.queryOptions({ input: { ...range, metric, groupBy } }),
+    api.analytics.timeseries.queryOptions({
+      input: { ...range, metric, groupBy },
+      refetchInterval: 60_000,
+    }),
   );
   const top = useQuery(
-    api.analytics.topPosts.queryOptions({ input: { ...range, metric, limit: 10 } }),
+    api.analytics.topPosts.queryOptions({
+      input: { ...range, metric, limit: 10 },
+      refetchInterval: 60_000,
+    }),
   );
   const contentTypes = useQuery(api.analytics.byContentType.queryOptions({ input: range }));
 
