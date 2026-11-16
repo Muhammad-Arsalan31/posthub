@@ -26,6 +26,7 @@ export default defineConfig({
     singleQuote: true,
     semi: true,
     printWidth: 100,
+    endOfLine: 'lf',
     ignorePatterns: ['**/routeTree.gen.ts', 'packages/db/drizzle/**'],
   },
   staged: {

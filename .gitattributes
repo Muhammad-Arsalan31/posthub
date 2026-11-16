@@ -1,0 +1,2 @@
+# Keep LF everywhere (Oxfmt expects it), even on Windows checkouts with core.autocrlf.
+* text=auto eol=lf
