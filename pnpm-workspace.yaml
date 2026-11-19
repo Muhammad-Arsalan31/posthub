@@ -64,7 +64,9 @@ overrides:
   vite: npm:@voidzero-dev/vite-plus-core@1.6.0
 
 allowBuilds:
-  better-sqlite3: true
+  # 13.x bundles prebuilt binaries (prebuilds/); letting pnpm run its implicit
+  # `node-gyp rebuild` would need Python and the C++ build tools for nothing.
+  better-sqlite3: false
   esbuild: true
   sharp: true
 
